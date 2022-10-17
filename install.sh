@@ -4,7 +4,7 @@ echo "** Installing Node JS**" &&
 sudo cp -r node-v16.18.0-linux-x64/{bin,include,lib,share} /usr/ &&
 export PATH=/usr/node-v16.18.0-linux-x64/bin:$PATH
 echo "**  installing pm2 **" &&
-sudo npm i ./pm2
+sudo npm i ./pm2-master
 echo "** Installing redis server **" &&
 cd redis-stable && make && sudo install make && cd ..
 echo "** Installing postgress SQL Server **"
