@@ -10,15 +10,7 @@ cd postgresql &&
 sudo ./configure &&
 sudo make &&
 sudo su &&
-sudo make install && 
-adduser postgres && 
-mkdir -p /usr/local/pgsql/data && 
-chown postgres /usr/local/pgsql/data && 
-su - postgres && 
-/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
-/usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start && 
-/usr/local/pgsql/bin/createdb test && 
-/usr/local/pgsql/bin/psql test &&
+sudo make install
 echo "** Installing redis server **" &&
 cd redis-stable &&
 make &&

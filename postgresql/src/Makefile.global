@@ -61,8 +61,8 @@ endif
 endif
 else # not PGXS
 vpath_build = no
-abs_top_builddir = /Users/momanraza/Downloads/postgresql-15.0
-abs_top_srcdir = /Users/momanraza/Downloads/postgresql-15.0
+abs_top_builddir = /Users/momanraza/Desktop/offline setup/postgresql
+abs_top_srcdir = /Users/momanraza/Desktop/offline setup/postgresql
 
 ifneq ($(vpath_build),yes)
 top_srcdir = $(top_builddir)
