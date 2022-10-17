@@ -1,3 +1,3 @@
-#define REDIS_GIT_SHA1 "00000000"
-#define REDIS_GIT_DIRTY "       0"
-#define REDIS_BUILD_ID "mp15-momanr-se-34.home-1665750815"
+#define REDIS_GIT_SHA1 "35af6b69"
+#define REDIS_GIT_DIRTY "      38"
+#define REDIS_BUILD_ID "MP15-MomanR-SE-34.local-1666033290"
