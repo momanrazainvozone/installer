@@ -8,5 +8,15 @@ sudo npm i ./pm2-master -g
 echo "** Installing redis server **" &&
 cd redis-stable && make && sudo install make && cd ..
 echo "** Installing postgress SQL Server **"
-sudo sh -c 'echo "deb http://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" > /etc/apt/sources.list.d/pgdg.list' && 
-wget --quiet -O - https://www.postgresql.org/media/keys/ACCC4CF8.asc | sudo apt-key add -
+sudo ./configure &&
+sudo make &&
+sudo su &&
+sudo make install && 
+adduser postgres && 
+mkdir -p /usr/local/pgsql/data && 
+chown postgres /usr/local/pgsql/data && 
+su - postgres && 
+/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
+/usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start && 
+/usr/local/pgsql/bin/createdb test && 
+/usr/local/pgsql/bin/psql test
