@@ -22,4 +22,4 @@ su - postgres &&
 echo "** Installing redis server **" &&
 cd redis-stable &&
 make &&
-sudo install make &&
+sudo install make
