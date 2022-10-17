@@ -8,6 +8,7 @@ sudo npm i ./pm2-master -g
 echo "** Installing redis server **" &&
 cd redis-stable && make && sudo install make && cd ..
 echo "** Installing postgress SQL Server **"
+cd postgresql && 
 sudo ./configure &&
 sudo make &&
 sudo su &&
@@ -19,4 +20,5 @@ su - postgres &&
 /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
 /usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start && 
 /usr/local/pgsql/bin/createdb test && 
-/usr/local/pgsql/bin/psql test
+/usr/local/pgsql/bin/psql test &&
+cd ..
