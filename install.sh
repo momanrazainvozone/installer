@@ -10,20 +10,21 @@ cd postgresql &&
 ./configure &&
 sudo make &&
 echo "** ======================================  Installing postgress SQL Server ====================================== **" &&
-sudo su -c root make install && 
-echo "** ======================================  Adding user postgres ====================================== **" &&
-sudo su -c root adduser postgres && 
-sudo su -c root rm -rf  /usr/local/pgsql/data &&
-echo "** ======================================  Clear Data ====================================== **" &&
-sudo su -c root mkdir /usr/local/pgsql/data && 
-sudo su -c root chown postgres /usr/local/pgsql/data && 
-echo "** ======================================  Chnage Permissions ====================================== **" &&
-echo "** ======================================  Finalizing ====================================== **" &&
-sudo su -c postgres /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data  && 
 
-sudo su -c /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
-sudo su -c /usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start  && 
-sudo su -c /usr/local/pgsql/bin/createdb test &&
+sudo su -c  'make install' && 
+echo "** ======================================  Adding user postgres ====================================== **" &&
+
+sudo su -c  'adduser postgres' && 
+sudo su -c  'rm -rf  /usr/local/pgsql/data' &&
+echo "** ======================================  Clear Data ====================================== **" &&
+
+sudo su -c 'mkdir /usr/local/pgsql/data' && 
+sudo su -c  'chown postgres /usr/local/pgsql/data' && 
+echo "** ======================================  Finalizing ====================================== **" &&
+
+sudo su -c   '/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data' postgres && 
+sudo su -c   '/usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start' postgres  && 
+sudo su -c    '/usr/local/pgsql/bin/createdb test' postgres &&
 exit && exit && export PATH=/usr/local/pgsql/bin:$PATH &&
 cd .. &&
 echo "** Installing redis server **" &&
