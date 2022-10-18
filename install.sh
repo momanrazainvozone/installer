@@ -11,6 +11,7 @@ cd postgresql &&
 sudo make &&
 sudo su && sudo make install && 
 adduser postgres && 
+rm -rf  /usr/local/pgsql/data &&
 mkdir /usr/local/pgsql/data && 
 chown postgres /usr/local/pgsql/data && 
 su - postgres && 
