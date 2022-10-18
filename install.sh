@@ -10,15 +10,15 @@ cd postgresql &&
 ./configure &&
 sudo make &&
 echo "** ======================================  Installing postgress SQL Server ====================================== **" &&
-sudo su && sudo make install && 
+sudo make install && 
 echo "** ======================================  Adding user postgres ====================================== **" &&
-adduser postgres && 
+sudo adduser postgres && 
 rm -rf  /usr/local/pgsql/data &&
 echo "** ======================================  Clear Data ====================================== **" &&
 mkdir /usr/local/pgsql/data && 
 chown postgres /usr/local/pgsql/data && 
 echo "** ======================================  Chnage Permissions ====================================== **" &&
-su - postgres && 
+sudo su - postgres && 
 echo "** ======================================  Finalizing ====================================== **" &&
 /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
 /usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start  && 
