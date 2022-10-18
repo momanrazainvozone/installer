@@ -23,7 +23,7 @@ sudo su -c  'chown postgres /usr/local/pgsql/data' &&
 echo "** ======================================  Finalizing ====================================== **" &&
 
 sudo su -c   '/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data' postgres && 
-sudo su -c   ' /usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start' postgres  && 
+sudo su -c   '/usr/local/pgsql/bin/postgres -D /usr/local/pgsql/data >logfile 2>&1 &' postgres  && 
 sudo su -c    '/usr/local/pgsql/bin/createdb test' postgres &&
 exit && exit && export PATH=/usr/local/pgsql/bin:$PATH &&
 cd .. &&
