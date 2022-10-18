@@ -8,7 +8,7 @@ sudo npm i ./pm2-master -g &&
 echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 cd postgresql &&
 ./configure &&
-sudo make &&
+sudo make && sudo su &&
 echo "** ======================================  Installing postgress SQL Server ====================================== **" &&
 sudo make install && 
 echo "** ======================================  Adding user postgres ====================================== **" &&
@@ -18,7 +18,7 @@ echo "** ======================================  Clear Data ====================
 mkdir /usr/local/pgsql/data && 
 chown postgres /usr/local/pgsql/data && 
 echo "** ======================================  Chnage Permissions ====================================== **" &&
-sudo su - postgres && 
+ sudo su - postgres && 
 echo "** ======================================  Finalizing ====================================== **" &&
 /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
 /usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start  && 
