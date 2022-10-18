@@ -2,7 +2,7 @@
  *
  *	  LATIN2 and WIN1250
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -30,11 +30,8 @@ PG_FUNCTION_INFO_V1(win1250_to_latin2);
  *		INTEGER,	-- destination encoding id
  *		CSTRING,	-- source string (null terminated C string)
  *		CSTRING,	-- destination string (null terminated C string)
- *		INTEGER,	-- source string length
- *		BOOL		-- if true, don't throw an error if conversion fails
- * ) returns INTEGER;
- *
- * Returns the number of bytes successfully converted.
+ *		INTEGER		-- source string length
+ * ) returns VOID;
  * ----------
  */
 
@@ -85,14 +82,12 @@ latin2_to_mic(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_LATIN2, PG_MULE_INTERNAL);
 
-	converted = latin2mic(src, dest, len, LC_ISO8859_2, PG_LATIN2, noError);
+	latin2mic(src, dest, len, LC_ISO8859_2, PG_LATIN2);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -101,14 +96,12 @@ mic_to_latin2(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_MULE_INTERNAL, PG_LATIN2);
 
-	converted = mic2latin(src, dest, len, LC_ISO8859_2, PG_LATIN2, noError);
+	mic2latin(src, dest, len, LC_ISO8859_2, PG_LATIN2);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -117,15 +110,13 @@ win1250_to_mic(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_WIN1250, PG_MULE_INTERNAL);
 
-	converted = latin2mic_with_table(src, dest, len, LC_ISO8859_2, PG_WIN1250,
-									 win1250_2_iso88592, noError);
+	latin2mic_with_table(src, dest, len, LC_ISO8859_2, PG_WIN1250,
+						 win1250_2_iso88592);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -134,15 +125,13 @@ mic_to_win1250(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_MULE_INTERNAL, PG_WIN1250);
 
-	converted = mic2latin_with_table(src, dest, len, LC_ISO8859_2, PG_WIN1250,
-									 iso88592_2_win1250, noError);
+	mic2latin_with_table(src, dest, len, LC_ISO8859_2, PG_WIN1250,
+						 iso88592_2_win1250);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -151,15 +140,12 @@ latin2_to_win1250(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_LATIN2, PG_WIN1250);
 
-	converted = local2local(src, dest, len, PG_LATIN2, PG_WIN1250,
-							iso88592_2_win1250, noError);
+	local2local(src, dest, len, PG_LATIN2, PG_WIN1250, iso88592_2_win1250);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -168,13 +154,10 @@ win1250_to_latin2(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_WIN1250, PG_LATIN2);
 
-	converted = local2local(src, dest, len, PG_WIN1250, PG_LATIN2,
-							win1250_2_iso88592, noError);
+	local2local(src, dest, len, PG_WIN1250, PG_LATIN2, win1250_2_iso88592);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }

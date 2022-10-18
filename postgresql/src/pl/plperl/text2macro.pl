@@ -1,6 +1,3 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # src/pl/plperl/text2macro.pl
 
 =head1 NAME

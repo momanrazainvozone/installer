@@ -3,7 +3,7 @@
  * syscache.c
  *	  System cache management routines
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,7 @@
 
 #include "access/htup_details.h"
 #include "access/sysattr.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_aggregate.h"
 #include "catalog/pg_am.h"
 #include "catalog/pg_amop.h"
@@ -47,11 +48,9 @@
 #include "catalog/pg_opclass.h"
 #include "catalog/pg_operator.h"
 #include "catalog/pg_opfamily.h"
-#include "catalog/pg_parameter_acl.h"
 #include "catalog/pg_partitioned_table.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_publication.h"
-#include "catalog/pg_publication_namespace.h"
 #include "catalog/pg_publication_rel.h"
 #include "catalog/pg_range.h"
 #include "catalog/pg_replication_origin.h"
@@ -98,8 +97,8 @@
 
 	There must be a unique index underlying each syscache (ie, an index
 	whose key is the same as that of the cache).  If there is not one
-	already, add the definition for it to include/catalog/pg_*.h using
-	DECLARE_UNIQUE_INDEX.
+	already, add definitions for it to include/catalog/indexing.h: you need
+	to add a DECLARE_UNIQUE_INDEX macro and a #define for the index OID.
 	(Adding an index requires a catversion.h update, while simply
 	adding/deleting caches only requires a recompile.)
 
@@ -575,28 +574,6 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
-	{ParameterAclRelationId,	/* PARAMETERACLNAME */
-		ParameterAclParnameIndexId,
-		1,
-		{
-			Anum_pg_parameter_acl_parname,
-			0,
-			0,
-			0
-		},
-		4
-	},
-	{ParameterAclRelationId,	/* PARAMETERACLOID */
-		ParameterAclOidIndexId,
-		1,
-		{
-			Anum_pg_parameter_acl_oid,
-			0,
-			0,
-			0
-		},
-		4
-	},
 	{PartitionedRelationId,		/* PARTRELID */
 		PartitionedRelidIndexId,
 		1,
@@ -641,28 +618,6 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		8
 	},
-	{PublicationNamespaceRelationId,	/* PUBLICATIONNAMESPACE */
-		PublicationNamespaceObjectIndexId,
-		1,
-		{
-			Anum_pg_publication_namespace_oid,
-			0,
-			0,
-			0
-		},
-		64
-	},
-	{PublicationNamespaceRelationId,	/* PUBLICATIONNAMESPACEMAP */
-		PublicationNamespacePnnspidPnpubidIndexId,
-		2,
-		{
-			Anum_pg_publication_namespace_pnnspid,
-			Anum_pg_publication_namespace_pnpubid,
-			0,
-			0
-		},
-		64
-	},
 	{PublicationRelationId,		/* PUBLICATIONOID */
 		PublicationObjectIndexId,
 		1,
@@ -696,18 +651,6 @@ static const struct cachedesc cacheinfo[] = {
 		},
 		64
 	},
-	{RangeRelationId,			/* RANGEMULTIRANGE */
-		RangeMultirangeTypidIndexId,
-		1,
-		{
-			Anum_pg_range_rngmultitypid,
-			0,
-			0,
-			0
-		},
-		4
-	},
-
 	{RangeRelationId,			/* RANGETYPE */
 		RangeTypidIndexId,
 		1,
@@ -786,11 +729,11 @@ static const struct cachedesc cacheinfo[] = {
 		32
 	},
 	{StatisticExtDataRelationId,	/* STATEXTDATASTXOID */
-		StatisticExtDataStxoidInhIndexId,
-		2,
+		StatisticExtDataStxoidIndexId,
+		1,
 		{
 			Anum_pg_statistic_ext_data_stxoid,
-			Anum_pg_statistic_ext_data_stxdinherit,
+			0,
 			0,
 			0
 		},

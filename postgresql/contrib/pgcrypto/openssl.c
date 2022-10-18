@@ -167,7 +167,7 @@ digest_free(PX_MD *h)
 	OSSLDigest *digest = (OSSLDigest *) h->p.ptr;
 
 	free_openssl_digest(digest);
-	pfree(h);
+	px_free(h);
 }
 
 static int	px_openssl_initialized = 0;
@@ -209,13 +209,13 @@ px_find_digest(const char *name, PX_MD **res)
 	if (!ctx)
 	{
 		pfree(digest);
-		return PXE_CIPHER_INIT;
+		return -1;
 	}
 	if (EVP_DigestInit_ex(ctx, md, NULL) == 0)
 	{
 		EVP_MD_CTX_destroy(ctx);
 		pfree(digest);
-		return PXE_CIPHER_INIT;
+		return -1;
 	}
 
 	digest->algo = md;
@@ -226,7 +226,7 @@ px_find_digest(const char *name, PX_MD **res)
 	open_digests = digest;
 
 	/* The PX_MD object is allocated in the current memory context. */
-	h = palloc(sizeof(*h));
+	h = px_alloc(sizeof(*h));
 	h->result_size = digest_result_size;
 	h->block_size = digest_block_size;
 	h->reset = digest_reset;
@@ -365,22 +365,21 @@ gen_ossl_free(PX_Cipher *c)
 	OSSLCipher *od = (OSSLCipher *) c->ptr;
 
 	free_openssl_cipher(od);
-	pfree(c);
+	px_free(c);
 }
 
 static int
-gen_ossl_decrypt(PX_Cipher *c, int padding, const uint8 *data, unsigned dlen,
-				 uint8 *res, unsigned *rlen)
+gen_ossl_decrypt(PX_Cipher *c, const uint8 *data, unsigned dlen,
+				 uint8 *res)
 {
 	OSSLCipher *od = c->ptr;
-	int			outlen,
-				outlen2;
+	int			outlen;
 
 	if (!od->init)
 	{
 		if (!EVP_DecryptInit_ex(od->evp_ctx, od->evp_ciph, NULL, NULL, NULL))
 			return PXE_CIPHER_INIT;
-		if (!EVP_CIPHER_CTX_set_padding(od->evp_ctx, padding))
+		if (!EVP_CIPHER_CTX_set_padding(od->evp_ctx, 0))
 			return PXE_CIPHER_INIT;
 		if (!EVP_CIPHER_CTX_set_key_length(od->evp_ctx, od->klen))
 			return PXE_CIPHER_INIT;
@@ -391,26 +390,22 @@ gen_ossl_decrypt(PX_Cipher *c, int padding, const uint8 *data, unsigned dlen,
 
 	if (!EVP_DecryptUpdate(od->evp_ctx, res, &outlen, data, dlen))
 		return PXE_DECRYPT_FAILED;
-	if (!EVP_DecryptFinal_ex(od->evp_ctx, res + outlen, &outlen2))
-		return PXE_DECRYPT_FAILED;
-	*rlen = outlen + outlen2;
 
 	return 0;
 }
 
 static int
-gen_ossl_encrypt(PX_Cipher *c, int padding, const uint8 *data, unsigned dlen,
-				 uint8 *res, unsigned *rlen)
+gen_ossl_encrypt(PX_Cipher *c, const uint8 *data, unsigned dlen,
+				 uint8 *res)
 {
 	OSSLCipher *od = c->ptr;
-	int			outlen,
-				outlen2;
+	int			outlen;
 
 	if (!od->init)
 	{
 		if (!EVP_EncryptInit_ex(od->evp_ctx, od->evp_ciph, NULL, NULL, NULL))
 			return PXE_CIPHER_INIT;
-		if (!EVP_CIPHER_CTX_set_padding(od->evp_ctx, padding))
+		if (!EVP_CIPHER_CTX_set_padding(od->evp_ctx, 0))
 			return PXE_CIPHER_INIT;
 		if (!EVP_CIPHER_CTX_set_key_length(od->evp_ctx, od->klen))
 			return PXE_CIPHER_INIT;
@@ -420,10 +415,7 @@ gen_ossl_encrypt(PX_Cipher *c, int padding, const uint8 *data, unsigned dlen,
 	}
 
 	if (!EVP_EncryptUpdate(od->evp_ctx, res, &outlen, data, dlen))
-		return PXE_ENCRYPT_FAILED;
-	if (!EVP_EncryptFinal_ex(od->evp_ctx, res + outlen, &outlen2))
-		return PXE_ENCRYPT_FAILED;
-	*rlen = outlen + outlen2;
+		return PXE_ERR_GENERIC;
 
 	return 0;
 }
@@ -814,7 +806,7 @@ px_find_cipher(const char *name, PX_Cipher **res)
 		od->evp_ciph = i->ciph->cipher_func();
 
 	/* The PX_Cipher is allocated in current memory context */
-	c = palloc(sizeof(*c));
+	c = px_alloc(sizeof(*c));
 	c->block_size = gen_ossl_block_size;
 	c->key_size = gen_ossl_key_size;
 	c->iv_size = gen_ossl_iv_size;

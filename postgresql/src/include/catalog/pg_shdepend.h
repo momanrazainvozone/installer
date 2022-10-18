@@ -4,16 +4,15 @@
  *	  definition of the "shared dependency" system catalog (pg_shdepend)
  *
  * pg_shdepend has no preloaded contents, so there is no pg_shdepend.dat
- * file; dependencies for system-defined objects are loaded into it
- * on-the-fly during initdb.  Most built-in objects are pinned anyway,
- * and hence need no explicit entries in pg_shdepend.
+ * file; system-defined dependencies are loaded into it during a late stage
+ * of the initdb process.
  *
  * NOTE: we do not represent all possible dependency pairs in pg_shdepend;
  * for example, there's not much value in creating an explicit dependency
  * from a relation to its database.  Currently, only dependencies on roles
  * are explicitly stored in pg_shdepend.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/pg_shdepend.h
@@ -40,12 +39,11 @@ CATALOG(pg_shdepend,1214,SharedDependRelationId) BKI_SHARED_RELATION
 	/*
 	 * Identification of the dependent (referencing) object.
 	 *
-	 * Note that dbid can be zero to denote a shared object.
+	 * These fields are all zeroes for a DEPENDENCY_PIN entry.  Also, dbid can
+	 * be zero to denote a shared object.
 	 */
-	Oid			dbid BKI_LOOKUP_OPT(pg_database);	/* OID of database
-													 * containing object */
-	Oid			classid BKI_LOOKUP(pg_class);	/* OID of table containing
-												 * object */
+	Oid			dbid;			/* OID of database containing object */
+	Oid			classid;		/* OID of table containing object */
 	Oid			objid;			/* OID of object itself */
 	int32		objsubid;		/* column number, or 0 if not used */
 
@@ -54,8 +52,7 @@ CATALOG(pg_shdepend,1214,SharedDependRelationId) BKI_SHARED_RELATION
 	 * a shared object, so we need no database ID field.  We don't bother with
 	 * a sub-object ID either.
 	 */
-	Oid			refclassid BKI_LOOKUP(pg_class);	/* OID of table containing
-													 * object */
+	Oid			refclassid;		/* OID of table containing object */
 	Oid			refobjid;		/* OID of object itself */
 
 	/*
@@ -71,8 +68,5 @@ CATALOG(pg_shdepend,1214,SharedDependRelationId) BKI_SHARED_RELATION
  * ----------------
  */
 typedef FormData_pg_shdepend *Form_pg_shdepend;
-
-DECLARE_INDEX(pg_shdepend_depender_index, 1232, SharedDependDependerIndexId, on pg_shdepend using btree(dbid oid_ops, classid oid_ops, objid oid_ops, objsubid int4_ops));
-DECLARE_INDEX(pg_shdepend_reference_index, 1233, SharedDependReferenceIndexId, on pg_shdepend using btree(refclassid oid_ops, refobjid oid_ops));
 
 #endif							/* PG_SHDEPEND_H */

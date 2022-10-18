@@ -3,7 +3,7 @@
  * parse_type.c
  *		handle type operations for parser
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -382,17 +382,13 @@ typenameTypeMod(ParseState *pstate, const TypeName *typeName, Type typ)
 
 			if (IsA(&ac->val, Integer))
 			{
-				cstr = psprintf("%ld", (long) intVal(&ac->val));
+				cstr = psprintf("%ld", (long) ac->val.val.ival);
 			}
-			else if (IsA(&ac->val, Float))
+			else if (IsA(&ac->val, Float) ||
+					 IsA(&ac->val, String))
 			{
-				/* we can just use the string representation directly. */
-				cstr = ac->val.fval.fval;
-			}
-			else if (IsA(&ac->val, String))
-			{
-				/* we can just use the string representation directly. */
-				cstr = strVal(&ac->val);
+				/* we can just use the str field directly. */
+				cstr = ac->val.val.str;
 			}
 		}
 		else if (IsA(tm, ColumnRef))
@@ -723,6 +719,13 @@ pts_error_callback(void *arg)
 	const char *str = (const char *) arg;
 
 	errcontext("invalid type name \"%s\"", str);
+
+	/*
+	 * Currently we just suppress any syntax error position report, rather
+	 * than transforming to an "internal query" error.  It's unlikely that a
+	 * type name is complex enough to need positioning.
+	 */
+	errposition(0);
 }
 
 /*
@@ -734,13 +737,20 @@ pts_error_callback(void *arg)
 TypeName *
 typeStringToTypeName(const char *str)
 {
+	StringInfoData buf;
 	List	   *raw_parsetree_list;
+	SelectStmt *stmt;
+	ResTarget  *restarget;
+	TypeCast   *typecast;
 	TypeName   *typeName;
 	ErrorContextCallback ptserrcontext;
 
 	/* make sure we give useful error for empty input */
 	if (strspn(str, " \t\n\r\f") == strlen(str))
 		goto fail;
+
+	initStringInfo(&buf);
+	appendStringInfo(&buf, "SELECT NULL::%s", str);
 
 	/*
 	 * Setup error traceback support in case of ereport() during parse
@@ -750,17 +760,57 @@ typeStringToTypeName(const char *str)
 	ptserrcontext.previous = error_context_stack;
 	error_context_stack = &ptserrcontext;
 
-	raw_parsetree_list = raw_parser(str, RAW_PARSE_TYPE_NAME);
+	raw_parsetree_list = raw_parser(buf.data);
 
 	error_context_stack = ptserrcontext.previous;
 
-	/* We should get back exactly one TypeName node. */
-	Assert(list_length(raw_parsetree_list) == 1);
-	typeName = linitial_node(TypeName, raw_parsetree_list);
+	/*
+	 * Make sure we got back exactly what we expected and no more; paranoia is
+	 * justified since the string might contain anything.
+	 */
+	if (list_length(raw_parsetree_list) != 1)
+		goto fail;
+	stmt = (SelectStmt *) linitial_node(RawStmt, raw_parsetree_list)->stmt;
+	if (stmt == NULL ||
+		!IsA(stmt, SelectStmt) ||
+		stmt->distinctClause != NIL ||
+		stmt->intoClause != NULL ||
+		stmt->fromClause != NIL ||
+		stmt->whereClause != NULL ||
+		stmt->groupClause != NIL ||
+		stmt->havingClause != NULL ||
+		stmt->windowClause != NIL ||
+		stmt->valuesLists != NIL ||
+		stmt->sortClause != NIL ||
+		stmt->limitOffset != NULL ||
+		stmt->limitCount != NULL ||
+		stmt->lockingClause != NIL ||
+		stmt->withClause != NULL ||
+		stmt->op != SETOP_NONE)
+		goto fail;
+	if (list_length(stmt->targetList) != 1)
+		goto fail;
+	restarget = (ResTarget *) linitial(stmt->targetList);
+	if (restarget == NULL ||
+		!IsA(restarget, ResTarget) ||
+		restarget->name != NULL ||
+		restarget->indirection != NIL)
+		goto fail;
+	typecast = (TypeCast *) restarget->val;
+	if (typecast == NULL ||
+		!IsA(typecast, TypeCast) ||
+		typecast->arg == NULL ||
+		!IsA(typecast->arg, A_Const))
+		goto fail;
 
-	/* The grammar allows SETOF in TypeName, but we don't want that here. */
+	typeName = typecast->typeName;
+	if (typeName == NULL ||
+		!IsA(typeName, TypeName))
+		goto fail;
 	if (typeName->setof)
 		goto fail;
+
+	pfree(buf.data);
 
 	return typeName;
 

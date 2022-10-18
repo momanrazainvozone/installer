@@ -1,12 +1,9 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 use strict;
 use warnings;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use TestLib;
+use Test::More tests => 16;
 
-my $tempdir = PostgreSQL::Test::Utils::tempdir;
+my $tempdir = TestLib::tempdir;
 
 program_help_ok('pg_verifybackup');
 program_version_ok('pg_verifybackup');
@@ -34,5 +31,3 @@ command_fails_like(
 	[ 'pg_verifybackup', '-m', "$tempdir/not_the_manifest", $tempdir ],
 	qr/could not open file.*\/not_the_manifest\"/,
 	'pg_verifybackup respects -m flag');
-
-done_testing();

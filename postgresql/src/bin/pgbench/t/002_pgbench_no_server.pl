@@ -1,6 +1,3 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 #
 # pgbench tests which do not need a server
 #
@@ -8,7 +5,7 @@
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Utils;
+use TestLib;
 use Test::More;
 
 # create a directory for scripts
@@ -16,7 +13,7 @@ my $testname = $0;
 $testname =~ s,.*/,,;
 $testname =~ s/\.pl$//;
 
-my $testdir = "$PostgreSQL::Test::Utils::tmp_check/t_${testname}_stuff";
+my $testdir = "$TestLib::tmp_check/t_${testname}_stuff";
 mkdir $testdir
   or BAIL_OUT("could not create test directory \"${testdir}\": $!");
 
@@ -91,26 +88,17 @@ my @options = (
 		[qr{weight spec.* out of range .*: -1}]
 	],
 	[ 'too many scripts', '-S ' x 129, [qr{at most 128 SQL scripts}] ],
+	[ 'bad #clients', '-c three', [qr{invalid number of clients: "three"}] ],
 	[
-		'bad #clients', '-c three',
-		[qr{invalid value "three" for option -c/--clients}]
+		'bad #threads', '-j eleven', [qr{invalid number of threads: "eleven"}]
 	],
-	[
-		'bad #threads', '-j eleven',
-		[qr{invalid value "eleven" for option -j/--jobs}]
-	],
-	[
-		'bad scale', '-i -s two',
-		[qr{invalid value "two" for option -s/--scale}]
-	],
+	[ 'bad scale', '-i -s two', [qr{invalid scaling factor: "two"}] ],
 	[
 		'invalid #transactions',
-		'-t zil', [qr{invalid value "zil" for option -t/--transactions}]
+		'-t zil',
+		[qr{invalid number of transactions: "zil"}]
 	],
-	[
-		'invalid duration',
-		'-T ten', [qr{invalid value "ten" for option -T/--time}]
-	],
+	[ 'invalid duration', '-T ten', [qr{invalid duration: "ten"}] ],
 	[
 		'-t XOR -T',
 		'-N -l --aggregate-interval=5 --log-prefix=notused -t 1000 -T 1',
@@ -122,11 +110,11 @@ my @options = (
 		[qr{specify either }]
 	],
 	[ 'bad variable', '--define foobla', [qr{invalid variable definition}] ],
-	[ 'invalid fillfactor', '-F 1', [qr{-F/--fillfactor must be in range}] ],
+	[ 'invalid fillfactor', '-F 1',            [qr{invalid fillfactor}] ],
 	[ 'invalid query mode', '-M no-such-mode', [qr{invalid query mode}] ],
 	[
 		'invalid progress', '--progress=0',
-		[qr{-P/--progress must be in range}]
+		[qr{invalid thread progress delay}]
 	],
 	[ 'invalid rate',    '--rate=0.0',          [qr{invalid rate limit}] ],
 	[ 'invalid latency', '--latency-limit=0.0', [qr{invalid latency limit}] ],
@@ -135,9 +123,8 @@ my @options = (
 		[qr{invalid sampling rate}]
 	],
 	[
-		'invalid aggregate interval',
-		'--aggregate-interval=-3',
-		[qr{--aggregate-interval must be in range}]
+		'invalid aggregate interval', '--aggregate-interval=-3',
+		[qr{invalid .* seconds for}]
 	],
 	[
 		'weight zero',
@@ -181,24 +168,12 @@ my @options = (
 	[
 		'bad partition number',
 		'-i --partitions -1',
-		[qr{--partitions must be in range}]
+		[qr{invalid number of partitions: "-1"}]
 	],
 	[
 		'partition method without partitioning',
 		'-i --partition-method=hash',
 		[qr{partition-method requires greater than zero --partitions}]
-	],
-	[
-		'bad maximum number of tries',
-		'--max-tries -10',
-		[qr{invalid number of maximum tries: "-10"}]
-	],
-	[
-		'an infinite number of tries',
-		'--max-tries 0',
-		[
-			qr{an unlimited number of transaction tries can only be used with --latency-limit or a duration}
-		]
 	],
 
 	# logging sub-options
@@ -365,16 +340,6 @@ my @script_tests = (
 		'set i',
 		[ qr{set i 1 }, qr{\^ error found here} ],
 		{ 'set_i_op' => "\\set i 1 +\n" }
-	],
-	[
-		'not enough arguments to permute',
-		[qr{unexpected number of arguments \(permute\)}],
-		{ 'bad-permute-1.sql' => "\\set i permute(1)\n" }
-	],
-	[
-		'too many arguments to permute',
-		[qr{unexpected number of arguments \(permute\)}],
-		{ 'bad-permute-2.sql' => "\\set i permute(1, 2, 3, 4)\n" }
 	],);
 
 for my $t (@script_tests)

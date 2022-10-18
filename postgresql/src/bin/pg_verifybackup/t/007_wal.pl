@@ -1,27 +1,25 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test pg_verifybackup's WAL verification.
 
 use strict;
 use warnings;
+use Cwd;
+use Config;
 use File::Path qw(rmtree);
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 9;
 
 # Start up the server and take a backup.
-my $primary = PostgreSQL::Test::Cluster->new('primary');
-$primary->init(allows_streaming => 1);
-$primary->start;
-my $backup_path = $primary->backup_dir . '/test_wal';
-$primary->command_ok(
-	[ 'pg_basebackup', '-D', $backup_path, '--no-sync', '-cfast' ],
+my $master = get_new_node('master');
+$master->init(allows_streaming => 1);
+$master->start;
+my $backup_path = $master->backup_dir . '/test_wal';
+$master->command_ok([ 'pg_basebackup', '-D', $backup_path, '--no-sync' ],
 	"base backup ok");
 
 # Rename pg_wal.
 my $original_pg_wal  = $backup_path . '/pg_wal';
-my $relocated_pg_wal = $primary->backup_dir . '/relocated_pg_wal';
+my $relocated_pg_wal = $master->backup_dir . '/relocated_pg_wal';
 rename($original_pg_wal, $relocated_pg_wal) || die "rename pg_wal: $!";
 
 # WAL verification should fail.
@@ -62,19 +60,16 @@ command_fails_like(
 # Check that WAL-Ranges has correct values with a history file and
 # a timeline > 1.  Rather than plugging in a new standby, do a
 # self-promotion of this node.
-$primary->stop;
-$primary->append_conf('standby.signal', '');
-$primary->start;
-$primary->promote;
-$primary->safe_psql('postgres', 'SELECT pg_switch_wal()');
-my $backup_path2 = $primary->backup_dir . '/test_tli';
+$master->stop;
+$master->append_conf('standby.signal', '');
+$master->start;
+$master->promote;
+$master->safe_psql('postgres', 'SELECT pg_switch_wal()');
+my $backup_path2 = $master->backup_dir . '/test_tli';
 # The base backup run below does a checkpoint, that removes the first segment
 # of the current timeline.
-$primary->command_ok(
-	[ 'pg_basebackup', '-D', $backup_path2, '--no-sync', '-cfast' ],
+$master->command_ok([ 'pg_basebackup', '-D', $backup_path2, '--no-sync' ],
 	"base backup 2 ok");
 command_ok(
 	[ 'pg_verifybackup', $backup_path2 ],
 	'valid base backup with timeline > 1');
-
-done_testing();

@@ -2,7 +2,7 @@
  * hashfuncs.c
  *		Functions to investigate the content of HASH indexes
  *
- * Copyright (c) 2017-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2017-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		contrib/pageinspect/hashfuncs.c
@@ -72,7 +72,7 @@ verify_hash_page(bytea *raw_page, int flags)
 							   (int) MAXALIGN(sizeof(HashPageOpaqueData)),
 							   (int) PageGetSpecialSize(page))));
 
-		pageopaque = HashPageGetOpaque(page);
+		pageopaque = (HashPageOpaque) PageGetSpecialPointer(page);
 		if (pageopaque->hasho_page_id != HASHO_PAGE_ID)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
@@ -154,7 +154,7 @@ static void
 GetHashPageStatistics(Page page, HashPageStat *stat)
 {
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-	HashPageOpaque opaque = HashPageGetOpaque(page);
+	HashPageOpaque opaque = (HashPageOpaque) PageGetSpecialPointer(page);
 	int			off;
 
 	stat->dead_items = stat->live_items = 0;
@@ -206,7 +206,7 @@ hash_page_type(PG_FUNCTION_ARGS)
 		type = "unused";
 	else
 	{
-		opaque = HashPageGetOpaque(page);
+		opaque = (HashPageOpaque) PageGetSpecialPointer(page);
 
 		/* page type (flags) */
 		pagetype = opaque->hasho_flag & LH_PAGE_TYPE;
@@ -393,7 +393,7 @@ Datum
 hash_bitmap_info(PG_FUNCTION_ARGS)
 {
 	Oid			indexRelid = PG_GETARG_OID(0);
-	int64		ovflblkno = PG_GETARG_INT64(1);
+	uint64		ovflblkno = PG_GETARG_INT64(1);
 	HashMetaPage metap;
 	Buffer		metabuf,
 				mapbuf;
@@ -430,16 +430,11 @@ hash_bitmap_info(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot access temporary tables of other sessions")));
 
-	if (ovflblkno < 0 || ovflblkno > MaxBlockNumber)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid block number")));
-
 	if (ovflblkno >= RelationGetNumberOfBlocks(indexRel))
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("block number %lld is out of range for relation \"%s\"",
-						(long long int) ovflblkno, RelationGetRelationName(indexRel))));
+				 errmsg("block number " UINT64_FORMAT " is out of range for relation \"%s\"",
+						ovflblkno, RelationGetRelationName(indexRel))));
 
 	/* Read the metapage so we can determine which bitmap page to use */
 	metabuf = _hash_getbuf(indexRel, HASH_METAPAGE, HASH_READ, LH_META_PAGE);

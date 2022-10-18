@@ -173,6 +173,7 @@ gbt_intv_compress(PG_FUNCTION_ARGS)
 	}
 
 	PG_RETURN_POINTER(retval);
+
 }
 
 Datum
@@ -275,6 +276,7 @@ gbt_intv_penalty(PG_FUNCTION_ARGS)
 	penalty_num(result, iorg[0], iorg[1], inew[0], inew[1]);
 
 	PG_RETURN_POINTER(result);
+
 }
 
 Datum

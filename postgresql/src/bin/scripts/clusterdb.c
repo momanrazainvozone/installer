@@ -2,7 +2,7 @@
  *
  * clusterdb
  *
- * Portions Copyright (c) 2002-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 2002-2020, PostgreSQL Global Development Group
  *
  * src/bin/scripts/clusterdb.c
  *
@@ -13,8 +13,6 @@
 #include "common.h"
 #include "common/logging.h"
 #include "fe_utils/cancel.h"
-#include "fe_utils/option_utils.h"
-#include "fe_utils/query_utils.h"
 #include "fe_utils/simple_list.h"
 #include "fe_utils/string_utils.h"
 
@@ -109,8 +107,7 @@ main(int argc, char *argv[])
 				maintenance_db = pg_strdup(optarg);
 				break;
 			default:
-				/* getopt_long already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(1);
 		}
 	}
@@ -129,7 +126,7 @@ main(int argc, char *argv[])
 	{
 		pg_log_error("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
 
@@ -145,10 +142,16 @@ main(int argc, char *argv[])
 	if (alldb)
 	{
 		if (dbname)
-			pg_fatal("cannot cluster all databases and a specific one at the same time");
+		{
+			pg_log_error("cannot cluster all databases and a specific one at the same time");
+			exit(1);
+		}
 
 		if (tables.head != NULL)
-			pg_fatal("cannot cluster specific table(s) in all databases");
+		{
+			pg_log_error("cannot cluster specific table(s) in all databases");
+			exit(1);
+		}
 
 		cparams.dbname = maintenance_db;
 

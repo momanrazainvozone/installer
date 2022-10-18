@@ -4,7 +4,7 @@
  *	  delete & vacuum routines for the postgres GIN
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -189,7 +189,7 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 	 * address.
 	 */
 	GinPageSetDeleted(page);
-	GinPageSetDeleteXid(page, ReadNextTransactionId());
+	GinPageSetDeleteXid(page, ReadNewTransactionId());
 
 	MarkBufferDirty(pBuffer);
 	MarkBufferDirty(lBuffer);
@@ -231,7 +231,6 @@ ginDeletePage(GinVacuumState *gvs, BlockNumber deleteBlkno, BlockNumber leftBlkn
 
 	END_CRIT_SECTION();
 
-	gvs->result->pages_newly_deleted++;
 	gvs->result->pages_deleted++;
 }
 
@@ -728,7 +727,7 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 	 * entries.  This is bogus if the index is partial, but it's real hard to
 	 * tell how many distinct heap entries are referenced by a GIN index.
 	 */
-	stats->num_index_tuples = Max(info->num_heap_tuples, 0);
+	stats->num_index_tuples = info->num_heap_tuples;
 	stats->estimated_count = info->estimated_count;
 
 	/*
@@ -793,30 +792,4 @@ ginvacuumcleanup(IndexVacuumInfo *info, IndexBulkDeleteResult *stats)
 		UnlockRelationForExtension(index, ExclusiveLock);
 
 	return stats;
-}
-
-/*
- * Return whether Page can safely be recycled.
- */
-bool
-GinPageIsRecyclable(Page page)
-{
-	TransactionId delete_xid;
-
-	if (PageIsNew(page))
-		return true;
-
-	if (!GinPageIsDeleted(page))
-		return false;
-
-	delete_xid = GinPageGetDeleteXid(page);
-
-	if (!TransactionIdIsValid(delete_xid))
-		return true;
-
-	/*
-	 * If no backend still could view delete_xid as in running, all scans
-	 * concurrent with ginDeletePage() must have finished.
-	 */
-	return GlobalVisCheckRemovableXid(NULL, delete_xid);
 }

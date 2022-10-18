@@ -4,7 +4,7 @@
  *		Common code for control data file output.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,7 +23,6 @@
 #include <unistd.h>
 #include <sys/stat.h>
 #include <fcntl.h>
-#include <time.h>
 
 #include "access/xlog_internal.h"
 #include "catalog/pg_control.h"
@@ -70,8 +69,11 @@ get_controlfile(const char *DataDir, bool *crc_ok_p)
 						ControlFilePath)));
 #else
 	if ((fd = open(ControlFilePath, O_RDONLY | PG_BINARY, 0)) == -1)
-		pg_fatal("could not open file \"%s\" for reading: %m",
-				 ControlFilePath);
+	{
+		pg_log_fatal("could not open file \"%s\" for reading: %m",
+					 ControlFilePath);
+		exit(EXIT_FAILURE);
+	}
 #endif
 
 	r = read(fd, ControlFile, sizeof(ControlFileData));
@@ -83,7 +85,10 @@ get_controlfile(const char *DataDir, bool *crc_ok_p)
 					(errcode_for_file_access(),
 					 errmsg("could not read file \"%s\": %m", ControlFilePath)));
 #else
-			pg_fatal("could not read file \"%s\": %m", ControlFilePath);
+		{
+			pg_log_fatal("could not read file \"%s\": %m", ControlFilePath);
+			exit(EXIT_FAILURE);
+		}
 #endif
 		else
 #ifndef FRONTEND
@@ -92,8 +97,11 @@ get_controlfile(const char *DataDir, bool *crc_ok_p)
 					 errmsg("could not read file \"%s\": read %d of %zu",
 							ControlFilePath, r, sizeof(ControlFileData))));
 #else
-			pg_fatal("could not read file \"%s\": read %d of %zu",
-					 ControlFilePath, r, sizeof(ControlFileData));
+		{
+			pg_log_fatal("could not read file \"%s\": read %d of %zu",
+						 ControlFilePath, r, sizeof(ControlFileData));
+			exit(EXIT_FAILURE);
+		}
 #endif
 	}
 
@@ -105,7 +113,10 @@ get_controlfile(const char *DataDir, bool *crc_ok_p)
 						ControlFilePath)));
 #else
 	if (close(fd) != 0)
-		pg_fatal("could not close file \"%s\": %m", ControlFilePath);
+	{
+		pg_log_fatal("could not close file \"%s\": %m", ControlFilePath);
+		exit(EXIT_FAILURE);
+	}
 #endif
 
 	/* Check the CRC. */
@@ -157,9 +168,6 @@ update_controlfile(const char *DataDir,
 	StaticAssertStmt(sizeof(ControlFileData) <= PG_CONTROL_FILE_SIZE,
 					 "sizeof(ControlFileData) exceeds PG_CONTROL_FILE_SIZE");
 
-	/* Update timestamp  */
-	ControlFile->time = (pg_time_t) time(NULL);
-
 	/* Recalculate CRC of control file */
 	INIT_CRC32C(ControlFile->crc);
 	COMP_CRC32C(ControlFile->crc,
@@ -191,7 +199,10 @@ update_controlfile(const char *DataDir,
 #else
 	if ((fd = open(ControlFilePath, O_WRONLY | PG_BINARY,
 				   pg_file_create_mode)) == -1)
-		pg_fatal("could not open file \"%s\": %m", ControlFilePath);
+	{
+		pg_log_fatal("could not open file \"%s\": %m", ControlFilePath);
+		exit(EXIT_FAILURE);
+	}
 #endif
 
 	errno = 0;
@@ -210,7 +221,8 @@ update_controlfile(const char *DataDir,
 				 errmsg("could not write file \"%s\": %m",
 						ControlFilePath)));
 #else
-		pg_fatal("could not write file \"%s\": %m", ControlFilePath);
+		pg_log_fatal("could not write file \"%s\": %m", ControlFilePath);
+		exit(EXIT_FAILURE);
 #endif
 	}
 #ifndef FRONTEND
@@ -229,7 +241,10 @@ update_controlfile(const char *DataDir,
 		pgstat_report_wait_end();
 #else
 		if (fsync(fd) != 0)
-			pg_fatal("could not fsync file \"%s\": %m", ControlFilePath);
+		{
+			pg_log_fatal("could not fsync file \"%s\": %m", ControlFilePath);
+			exit(EXIT_FAILURE);
+		}
 #endif
 	}
 
@@ -241,7 +256,8 @@ update_controlfile(const char *DataDir,
 				 errmsg("could not close file \"%s\": %m",
 						ControlFilePath)));
 #else
-		pg_fatal("could not close file \"%s\": %m", ControlFilePath);
+		pg_log_fatal("could not close file \"%s\": %m", ControlFilePath);
+		exit(EXIT_FAILURE);
 #endif
 	}
 }

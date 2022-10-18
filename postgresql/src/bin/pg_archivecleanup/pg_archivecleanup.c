@@ -148,21 +148,24 @@ CleanupPriorWALFiles(void)
 
 				rc = unlink(WALFilePath);
 				if (rc != 0)
-					pg_fatal("could not remove file \"%s\": %m",
-							 WALFilePath);
+				{
+					pg_log_error("could not remove file \"%s\": %m",
+								 WALFilePath);
+					break;
+				}
 			}
 		}
 
 		if (errno)
-			pg_fatal("could not read archive location \"%s\": %m",
-					 archiveLocation);
+			pg_log_error("could not read archive location \"%s\": %m",
+						 archiveLocation);
 		if (closedir(xldir))
-			pg_fatal("could not close archive location \"%s\": %m",
-					 archiveLocation);
+			pg_log_error("could not close archive location \"%s\": %m",
+						 archiveLocation);
 	}
 	else
-		pg_fatal("could not open archive location \"%s\": %m",
-				 archiveLocation);
+		pg_log_error("could not open archive location \"%s\": %m",
+					 archiveLocation);
 }
 
 /*
@@ -235,7 +238,7 @@ SetWALFileNameForCleanup(void)
 	if (!fnameOK)
 	{
 		pg_log_error("invalid file name argument");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(2);
 	}
 }
@@ -299,7 +302,7 @@ main(int argc, char **argv)
 		switch (c)
 		{
 			case 'd':			/* Debug mode */
-				pg_logging_increase_verbosity();
+				pg_logging_set_level(PG_LOG_DEBUG);
 				break;
 			case 'n':			/* Dry-Run mode */
 				dryrun = true;
@@ -309,9 +312,9 @@ main(int argc, char **argv)
 													 * from xlogfile names */
 				break;
 			default:
-				/* getopt already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(2);
+				break;
 		}
 	}
 
@@ -330,7 +333,7 @@ main(int argc, char **argv)
 	else
 	{
 		pg_log_error("must specify archive location");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(2);
 	}
 
@@ -342,14 +345,14 @@ main(int argc, char **argv)
 	else
 	{
 		pg_log_error("must specify oldest kept WAL file");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(2);
 	}
 
 	if (optind < argc)
 	{
 		pg_log_error("too many command-line arguments");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(2);
 	}
 

@@ -1,13 +1,13 @@
 -- first some tests of basic functionality
-CREATE EXTENSION plpython3u;
+CREATE EXTENSION plpython2u;
 
 -- really stupid function just to get the module loaded
-CREATE FUNCTION stupid() RETURNS text AS 'return "zarkon"' LANGUAGE plpython3u;
+CREATE FUNCTION stupid() RETURNS text AS 'return "zarkon"' LANGUAGE plpythonu;
 
 select stupid();
 
 -- check 2/3 versioning
-CREATE FUNCTION stupidn() RETURNS text AS 'return "zarkon"' LANGUAGE plpython3u;
+CREATE FUNCTION stupidn() RETURNS text AS 'return "zarkon"' LANGUAGE plpython2u;
 
 select stupidn();
 
@@ -21,7 +21,7 @@ for key in keys:
     out.append("%s: %s" % (key, u[key]))
 words = a1 + " " + a2 + " => {" + ", ".join(out) + "}"
 return words'
-	LANGUAGE plpython3u;
+	LANGUAGE plpythonu;
 
 select "Argument test #1"(users, fname, lname) from users where lname = 'doe' order by 1;
 
@@ -32,7 +32,7 @@ $$
 contents = list(filter(lambda x: not x.startswith("__"), dir(plpy)))
 contents.sort()
 return contents
-$$ LANGUAGE plpython3u;
+$$ LANGUAGE plpythonu;
 
 select module_contents();
 
@@ -47,6 +47,6 @@ plpy.info('info', 37, [1, 2, 3])
 plpy.notice('notice')
 plpy.warning('warning')
 plpy.error('error')
-$$ LANGUAGE plpython3u;
+$$ LANGUAGE plpythonu;
 
 SELECT elog_test_basic();

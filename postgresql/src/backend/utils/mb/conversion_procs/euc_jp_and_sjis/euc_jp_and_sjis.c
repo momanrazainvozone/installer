@@ -2,7 +2,7 @@
  *
  *	  EUC_JP, SJIS and MULE_INTERNAL
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -42,20 +42,17 @@ PG_FUNCTION_INFO_V1(mic_to_sjis);
  *		INTEGER,	-- destination encoding id
  *		CSTRING,	-- source string (null terminated C string)
  *		CSTRING,	-- destination string (null terminated C string)
- *		INTEGER,	-- source string length
- *		BOOL		-- if true, don't throw an error if conversion fails
- * ) returns INTEGER;
- *
- * Returns the number of bytes successfully converted.
+ *		INTEGER		-- source string length
+ * ) returns VOID;
  * ----------
  */
 
-static int	sjis2mic(const unsigned char *sjis, unsigned char *p, int len, bool noError);
-static int	mic2sjis(const unsigned char *mic, unsigned char *p, int len, bool noError);
-static int	euc_jp2mic(const unsigned char *euc, unsigned char *p, int len, bool noError);
-static int	mic2euc_jp(const unsigned char *mic, unsigned char *p, int len, bool noError);
-static int	euc_jp2sjis(const unsigned char *mic, unsigned char *p, int len, bool noError);
-static int	sjis2euc_jp(const unsigned char *mic, unsigned char *p, int len, bool noError);
+static void sjis2mic(const unsigned char *sjis, unsigned char *p, int len);
+static void mic2sjis(const unsigned char *mic, unsigned char *p, int len);
+static void euc_jp2mic(const unsigned char *euc, unsigned char *p, int len);
+static void mic2euc_jp(const unsigned char *mic, unsigned char *p, int len);
+static void euc_jp2sjis(const unsigned char *mic, unsigned char *p, int len);
+static void sjis2euc_jp(const unsigned char *mic, unsigned char *p, int len);
 
 Datum
 euc_jp_to_sjis(PG_FUNCTION_ARGS)
@@ -63,14 +60,12 @@ euc_jp_to_sjis(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_EUC_JP, PG_SJIS);
 
-	converted = euc_jp2sjis(src, dest, len, noError);
+	euc_jp2sjis(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -79,14 +74,12 @@ sjis_to_euc_jp(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_SJIS, PG_EUC_JP);
 
-	converted = sjis2euc_jp(src, dest, len, noError);
+	sjis2euc_jp(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -95,14 +88,12 @@ euc_jp_to_mic(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_EUC_JP, PG_MULE_INTERNAL);
 
-	converted = euc_jp2mic(src, dest, len, noError);
+	euc_jp2mic(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -111,14 +102,12 @@ mic_to_euc_jp(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_MULE_INTERNAL, PG_EUC_JP);
 
-	converted = mic2euc_jp(src, dest, len, noError);
+	mic2euc_jp(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -127,14 +116,12 @@ sjis_to_mic(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_SJIS, PG_MULE_INTERNAL);
 
-	converted = sjis2mic(src, dest, len, noError);
+	sjis2mic(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -143,23 +130,20 @@ mic_to_sjis(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
-	int			converted;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_MULE_INTERNAL, PG_SJIS);
 
-	converted = mic2sjis(src, dest, len, noError);
+	mic2sjis(src, dest, len);
 
-	PG_RETURN_INT32(converted);
+	PG_RETURN_VOID();
 }
 
 /*
  * SJIS ---> MIC
  */
-static int
-sjis2mic(const unsigned char *sjis, unsigned char *p, int len, bool noError)
+static void
+sjis2mic(const unsigned char *sjis, unsigned char *p, int len)
 {
-	const unsigned char *start = sjis;
 	int			c1,
 				c2,
 				i,
@@ -183,11 +167,7 @@ sjis2mic(const unsigned char *sjis, unsigned char *p, int len, bool noError)
 			 * JIS X0208, X0212, user defined extended characters
 			 */
 			if (len < 2 || !ISSJISHEAD(c1) || !ISSJISTAIL(sjis[1]))
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_SJIS, (const char *) sjis, len);
-			}
 			c2 = sjis[1];
 			k = (c1 << 8) + c2;
 			if (k >= 0xed40 && k < 0xf040)
@@ -277,28 +257,21 @@ sjis2mic(const unsigned char *sjis, unsigned char *p, int len, bool noError)
 		else
 		{						/* should be ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_SJIS, (const char *) sjis, len);
-			}
 			*p++ = c1;
 			sjis++;
 			len--;
 		}
 	}
 	*p = '\0';
-
-	return sjis - start;
 }
 
 /*
  * MIC ---> SJIS
  */
-static int
-mic2sjis(const unsigned char *mic, unsigned char *p, int len, bool noError)
+static void
+mic2sjis(const unsigned char *mic, unsigned char *p, int len)
 {
-	const unsigned char *start = mic;
 	int			c1,
 				c2,
 				k,
@@ -311,25 +284,17 @@ mic2sjis(const unsigned char *mic, unsigned char *p, int len, bool noError)
 		{
 			/* ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_MULE_INTERNAL,
 										(const char *) mic, len);
-			}
 			*p++ = c1;
 			mic++;
 			len--;
 			continue;
 		}
-		l = pg_encoding_verifymbchar(PG_MULE_INTERNAL, (const char *) mic, len);
+		l = pg_encoding_verifymb(PG_MULE_INTERNAL, (const char *) mic, len);
 		if (l < 0)
-		{
-			if (noError)
-				break;
 			report_invalid_encoding(PG_MULE_INTERNAL,
 									(const char *) mic, len);
-		}
 		if (c1 == LC_JISX0201K)
 			*p++ = mic[1];
 		else if (c1 == LC_JISX0208)
@@ -385,27 +350,20 @@ mic2sjis(const unsigned char *mic, unsigned char *p, int len, bool noError)
 			}
 		}
 		else
-		{
-			if (noError)
-				break;
 			report_untranslatable_char(PG_MULE_INTERNAL, PG_SJIS,
 									   (const char *) mic, len);
-		}
 		mic += l;
 		len -= l;
 	}
 	*p = '\0';
-
-	return mic - start;
 }
 
 /*
  * EUC_JP ---> MIC
  */
-static int
-euc_jp2mic(const unsigned char *euc, unsigned char *p, int len, bool noError)
+static void
+euc_jp2mic(const unsigned char *euc, unsigned char *p, int len)
 {
-	const unsigned char *start = euc;
 	int			c1;
 	int			l;
 
@@ -416,25 +374,17 @@ euc_jp2mic(const unsigned char *euc, unsigned char *p, int len, bool noError)
 		{
 			/* ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_EUC_JP,
 										(const char *) euc, len);
-			}
 			*p++ = c1;
 			euc++;
 			len--;
 			continue;
 		}
-		l = pg_encoding_verifymbchar(PG_EUC_JP, (const char *) euc, len);
+		l = pg_encoding_verifymb(PG_EUC_JP, (const char *) euc, len);
 		if (l < 0)
-		{
-			if (noError)
-				break;
 			report_invalid_encoding(PG_EUC_JP,
 									(const char *) euc, len);
-		}
 		if (c1 == SS2)
 		{						/* 1 byte kana? */
 			*p++ = LC_JISX0201K;
@@ -456,17 +406,14 @@ euc_jp2mic(const unsigned char *euc, unsigned char *p, int len, bool noError)
 		len -= l;
 	}
 	*p = '\0';
-
-	return euc - start;
 }
 
 /*
  * MIC ---> EUC_JP
  */
-static int
-mic2euc_jp(const unsigned char *mic, unsigned char *p, int len, bool noError)
+static void
+mic2euc_jp(const unsigned char *mic, unsigned char *p, int len)
 {
-	const unsigned char *start = mic;
 	int			c1;
 	int			l;
 
@@ -477,25 +424,17 @@ mic2euc_jp(const unsigned char *mic, unsigned char *p, int len, bool noError)
 		{
 			/* ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_MULE_INTERNAL,
 										(const char *) mic, len);
-			}
 			*p++ = c1;
 			mic++;
 			len--;
 			continue;
 		}
-		l = pg_encoding_verifymbchar(PG_MULE_INTERNAL, (const char *) mic, len);
+		l = pg_encoding_verifymb(PG_MULE_INTERNAL, (const char *) mic, len);
 		if (l < 0)
-		{
-			if (noError)
-				break;
 			report_invalid_encoding(PG_MULE_INTERNAL,
 									(const char *) mic, len);
-		}
 		if (c1 == LC_JISX0201K)
 		{
 			*p++ = SS2;
@@ -513,27 +452,20 @@ mic2euc_jp(const unsigned char *mic, unsigned char *p, int len, bool noError)
 			*p++ = mic[2];
 		}
 		else
-		{
-			if (noError)
-				break;
 			report_untranslatable_char(PG_MULE_INTERNAL, PG_EUC_JP,
 									   (const char *) mic, len);
-		}
 		mic += l;
 		len -= l;
 	}
 	*p = '\0';
-
-	return mic - start;
 }
 
 /*
  * EUC_JP -> SJIS
  */
-static int
-euc_jp2sjis(const unsigned char *euc, unsigned char *p, int len, bool noError)
+static void
+euc_jp2sjis(const unsigned char *euc, unsigned char *p, int len)
 {
-	const unsigned char *start = euc;
 	int			c1,
 				c2,
 				k;
@@ -546,25 +478,17 @@ euc_jp2sjis(const unsigned char *euc, unsigned char *p, int len, bool noError)
 		{
 			/* ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_EUC_JP,
 										(const char *) euc, len);
-			}
 			*p++ = c1;
 			euc++;
 			len--;
 			continue;
 		}
-		l = pg_encoding_verifymbchar(PG_EUC_JP, (const char *) euc, len);
+		l = pg_encoding_verifymb(PG_EUC_JP, (const char *) euc, len);
 		if (l < 0)
-		{
-			if (noError)
-				break;
 			report_invalid_encoding(PG_EUC_JP,
 									(const char *) euc, len);
-		}
 		if (c1 == SS2)
 		{
 			/* hankaku kana? */
@@ -627,17 +551,14 @@ euc_jp2sjis(const unsigned char *euc, unsigned char *p, int len, bool noError)
 		len -= l;
 	}
 	*p = '\0';
-
-	return euc - start;
 }
 
 /*
  * SJIS ---> EUC_JP
  */
-static int
-sjis2euc_jp(const unsigned char *sjis, unsigned char *p, int len, bool noError)
+static void
+sjis2euc_jp(const unsigned char *sjis, unsigned char *p, int len)
 {
-	const unsigned char *start = sjis;
 	int			c1,
 				c2,
 				i,
@@ -652,25 +573,17 @@ sjis2euc_jp(const unsigned char *sjis, unsigned char *p, int len, bool noError)
 		{
 			/* ASCII */
 			if (c1 == 0)
-			{
-				if (noError)
-					break;
 				report_invalid_encoding(PG_SJIS,
 										(const char *) sjis, len);
-			}
 			*p++ = c1;
 			sjis++;
 			len--;
 			continue;
 		}
-		l = pg_encoding_verifymbchar(PG_SJIS, (const char *) sjis, len);
+		l = pg_encoding_verifymb(PG_SJIS, (const char *) sjis, len);
 		if (l < 0)
-		{
-			if (noError)
-				break;
 			report_invalid_encoding(PG_SJIS,
 									(const char *) sjis, len);
-		}
 		if (c1 >= 0xa1 && c1 <= 0xdf)
 		{
 			/* JIS X0201 (1 byte kana) */
@@ -767,6 +680,4 @@ sjis2euc_jp(const unsigned char *sjis, unsigned char *p, int len, bool noError)
 		len -= l;
 	}
 	*p = '\0';
-
-	return sjis - start;
 }

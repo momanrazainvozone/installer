@@ -3,7 +3,7 @@
  * int.c
  *	  Functions for the built-in integer types (except int8).
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -146,39 +146,15 @@ int2vectorin(PG_FUNCTION_ARGS)
 
 	result = (int2vector *) palloc0(Int2VectorSize(FUNC_MAX_ARGS));
 
-	for (n = 0; n < FUNC_MAX_ARGS; n++)
+	for (n = 0; *intString && n < FUNC_MAX_ARGS; n++)
 	{
-		long		l;
-		char	   *endp;
-
 		while (*intString && isspace((unsigned char) *intString))
 			intString++;
 		if (*intString == '\0')
 			break;
-
-		errno = 0;
-		l = strtol(intString, &endp, 10);
-
-		if (intString == endp)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for type %s: \"%s\"",
-							"smallint", intString)));
-
-		if (errno == ERANGE || l < SHRT_MIN || l > SHRT_MAX)
-			ereport(ERROR,
-					(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-					 errmsg("value \"%s\" is out of range for type %s", intString,
-							"smallint")));
-
-		if (*endp && *endp != ' ')
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TEXT_REPRESENTATION),
-					 errmsg("invalid input syntax for type %s: \"%s\"",
-							"integer", intString)));
-
-		result->values[n] = l;
-		intString = endp;
+		result->values[n] = pg_atoi(intString, sizeof(int16), ' ');
+		while (*intString && !isspace((unsigned char) *intString))
+			intString++;
 	}
 	while (*intString && isspace((unsigned char) *intString))
 		intString++;
@@ -215,7 +191,9 @@ int2vectorout(PG_FUNCTION_ARGS)
 	{
 		if (num != 0)
 			*rp++ = ' ';
-		rp += pg_itoa(int2Array->values[num], rp);
+		pg_itoa(int2Array->values[num], rp);
+		while (*++rp != '\0')
+			;
 	}
 	*rp = '\0';
 	PG_RETURN_CSTRING(result);

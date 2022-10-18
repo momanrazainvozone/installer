@@ -222,9 +222,11 @@ gimme_tour(PlannerInfo *root, Edge *edge_table, Gene *new_gene, int num_gene)
 
 		/* mark this node as incorporated */
 		edge_table[(int) new_gene[i - 1]].unused_edges = -1;
+
 	}							/* for (i=1; i<num_gene; i++) */
 
 	return edge_failures;
+
 }
 
 /* remove_gene
@@ -335,6 +337,7 @@ gimme_gene(PlannerInfo *root, Edge edge, Edge *edge_table)
 			elog(ERROR, "minimum_count not set");
 		else if (edge_table[(int) friend].unused_edges == minimum_edges)
 			minimum_count++;
+
 	}							/* for (i=0; i<edge.unused_edges; i++) */
 
 

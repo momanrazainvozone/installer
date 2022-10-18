@@ -7,7 +7,7 @@
  * Splits jsonpath string into tokens represented as JsonPathString structs.
  * Decodes unicode and hex escaped strings.
  *
- * Copyright (c) 2019-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath_scan.l
@@ -82,13 +82,11 @@ other		[^\?\%\$\.\[\]\{\}\(\)\|\&\!\=\<\>\@\#\,\*:\-\+\/\\\" \t\n\r\f]
 
 digit		[0-9]
 integer		(0|[1-9]{digit}*)
-decimal		({integer}\.{digit}*|\.{digit}+)
+decimal		{integer}\.{digit}+
+decimalfail	{integer}\.
 real		({integer}|{decimal})[Ee][-+]?{digit}+
-realfail	({integer}|{decimal})[Ee][-+]
-
-integer_junk	{integer}{other}
-decimal_junk	{decimal}{other}
-real_junk		{real}{other}
+realfail1	({integer}|{decimal})[Ee]
+realfail2	({integer}|{decimal})[Ee][-+]
 
 hex_dig		[0-9A-Fa-f]
 unicode		\\u({hex_dig}{4}|\{{hex_dig}{1,6}\})
@@ -244,10 +242,16 @@ hex_fail	\\x{hex_dig}{0,1}
 									return INT_P;
 								}
 
-{realfail}						{ yyerror(NULL, "invalid numeric literal"); }
-{integer_junk}					{ yyerror(NULL, "trailing junk after numeric literal"); }
-{decimal_junk}					{ yyerror(NULL, "trailing junk after numeric literal"); }
-{real_junk}						{ yyerror(NULL, "trailing junk after numeric literal"); }
+{decimalfail}					{
+									/* throw back the ., and treat as integer */
+									yyless(yyleng - 1);
+									addstring(true, yytext, yyleng);
+									addchar(false, '\0');
+									yylval->str = scanstring;
+									return INT_P;
+								}
+
+({realfail1}|{realfail2})		{ yyerror(NULL, "invalid floating point number"); }
 
 \"								{
 									addchar(true, '\0');
@@ -332,8 +336,8 @@ static const JsonPathKeyword keywords[] = {
 static enum yytokentype
 checkKeyword()
 {
-	int			res = IDENT_P;
-	int			diff;
+	int						res = IDENT_P;
+	int						diff;
 	const JsonPathKeyword  *StopLow = keywords,
 						   *StopHigh = keywords + lengthof(keywords),
 						   *StopMiddle;

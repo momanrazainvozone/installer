@@ -1,6 +1,3 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Configuration arguments for vcbuild.
 use strict;
 use warnings;
@@ -14,14 +11,12 @@ our $config = {
 	extraver  => undef,    # --with-extra-version=<string>
 	gss       => undef,    # --with-gssapi=<path>
 	icu       => undef,    # --with-icu=<path>
-	lz4       => undef,    # --with-lz4=<path>
-	zstd      => undef,    # --with-zstd=<path>
 	nls       => undef,    # --enable-nls=<path>
 	tap_tests => undef,    # --enable-tap-tests
 	tcl       => undef,    # --with-tcl=<path>
 	perl      => undef,    # --with-perl=<path>
 	python    => undef,    # --with-python=<path>
-	openssl   => undef,    # --with-ssl=openssl with <path>
+	openssl   => undef,    # --with-openssl=<path>
 	uuid      => undef,    # --with-uuid=<path>
 	xml       => undef,    # --with-libxml=<path>
 	xslt      => undef,    # --with-libxslt=<path>

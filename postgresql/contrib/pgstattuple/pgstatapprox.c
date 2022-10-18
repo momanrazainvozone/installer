@@ -3,7 +3,7 @@
  * pgstatapprox.c
  *		  Bloat estimation functions
  *
- * Copyright (c) 2014-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/pgstattuple/pgstatapprox.c
@@ -71,7 +71,7 @@ statapprox_heap(Relation rel, output_type *stat)
 	BufferAccessStrategy bstrategy;
 	TransactionId OldestXmin;
 
-	OldestXmin = GetOldestNonRemovableTransactionId(rel);
+	OldestXmin = GetOldestXmin(rel, PROCARRAY_FLAGS_VACUUM);
 	bstrategy = GetAccessStrategy(BAS_BULKREAD);
 
 	nblocks = RelationGetNumberOfBlocks(rel);
@@ -195,9 +195,6 @@ statapprox_heap(Relation rel, output_type *stat)
 	stat->tuple_count = vac_estimate_reltuples(rel, nblocks, scanned,
 											   stat->tuple_count);
 
-	/* It's not clear if we could get -1 here, but be safe. */
-	stat->tuple_count = Max(stat->tuple_count, 0);
-
 	/*
 	 * Calculate percentages if the relation has one or more pages.
 	 */
@@ -281,17 +278,16 @@ pgstattuple_approx_internal(Oid relid, FunctionCallInfo fcinfo)
 				 errmsg("cannot access temporary tables of other sessions")));
 
 	/*
-	 * We support only relation kinds with a visibility map and a free space
-	 * map.
+	 * We support only ordinary relations and materialised views, because we
+	 * depend on the visibility map and free space map for our estimates about
+	 * unscanned pages.
 	 */
 	if (!(rel->rd_rel->relkind == RELKIND_RELATION ||
-		  rel->rd_rel->relkind == RELKIND_MATVIEW ||
-		  rel->rd_rel->relkind == RELKIND_TOASTVALUE))
+		  rel->rd_rel->relkind == RELKIND_MATVIEW))
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-				 errmsg("relation \"%s\" is of wrong relation kind",
-						RelationGetRelationName(rel)),
-				 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
+				 errmsg("\"%s\" is not a table or materialized view",
+						RelationGetRelationName(rel))));
 
 	if (rel->rd_rel->relam != HEAP_TABLE_AM_OID)
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),

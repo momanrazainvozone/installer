@@ -2,43 +2,43 @@
 -- HMAC-MD5
 --
 
-SELECT hmac(
+SELECT encode(hmac(
 'Hi There',
-'\x0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b'::bytea,
-'md5');
+decode('0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b', 'hex'),
+'md5'), 'hex');
 
 -- 2
-SELECT hmac(
+SELECT encode(hmac(
 'Jefe',
 'what do ya want for nothing?',
-'md5');
+'md5'), 'hex');
 
 -- 3
-SELECT hmac(
-'\xdddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd'::bytea,
-'\xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'::bytea,
-'md5');
+SELECT encode(hmac(
+decode('dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd', 'hex'),
+decode('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+'md5'), 'hex');
 
 -- 4
-SELECT hmac(
-'\xcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd'::bytea,
-'\x0102030405060708090a0b0c0d0e0f10111213141516171819'::bytea,
-'md5');
+SELECT encode(hmac(
+decode('cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd', 'hex'),
+decode('0102030405060708090a0b0c0d0e0f10111213141516171819', 'hex'),
+'md5'), 'hex');
 
 -- 5
-SELECT hmac(
+SELECT encode(hmac(
 'Test With Truncation',
-'\x0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c'::bytea,
-'md5');
+decode('0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c', 'hex'),
+'md5'), 'hex');
 
 -- 6
-SELECT hmac(
+SELECT encode(hmac(
 'Test Using Larger Than Block-Size Key - Hash Key First',
-'\xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'::bytea,
-'md5');
+decode('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+'md5'), 'hex');
 
 -- 7
-SELECT hmac(
+SELECT encode(hmac(
 'Test Using Larger Than Block-Size Key and Larger Than One Block-Size Data',
-'\xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'::bytea,
-'md5');
+decode('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 'hex'),
+'md5'), 'hex');

@@ -1,6 +1,3 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 package Project;
 
 #
@@ -30,11 +27,11 @@ sub _new
 		references            => [],
 		libraries             => [],
 		suffixlib             => [],
-		includes              => [],
+		includes              => '',
 		prefixincludes        => '',
 		defines               => ';',
 		solution              => $solution,
-		disablewarnings       => '4018;4244;4273;4101;4102;4090;4267',
+		disablewarnings       => '4018;4244;4273;4102;4090;4267',
 		disablelinkerwarnings => '',
 		platform              => $solution->{platform},
 	};
@@ -47,16 +44,7 @@ sub AddFile
 {
 	my ($self, $filename) = @_;
 
-	$self->FindAndAddAdditionalFiles($filename);
 	$self->{files}->{$filename} = 1;
-	return;
-}
-
-sub AddDependantFiles
-{
-	my ($self, $filename) = @_;
-
-	$self->FindAndAddAdditionalFiles($filename);
 	return;
 }
 
@@ -67,37 +55,9 @@ sub AddFiles
 
 	while (my $f = shift)
 	{
-		$self->AddFile($dir . "/" . $f, 1);
+		$self->{files}->{ $dir . "/" . $f } = 1;
 	}
 	return;
-}
-
-# Handle Makefile rules by searching for other files which exist with the same
-# name but a different file extension and add those files too.
-sub FindAndAddAdditionalFiles
-{
-	my $self  = shift;
-	my $fname = shift;
-	$fname =~ /(.*)(\.[^.]+)$/;
-	my $filenoext = $1;
-	my $fileext   = $2;
-
-	# For .c files, check if either a .l or .y file of the same name
-	# exists and add that too.
-	if ($fileext eq ".c")
-	{
-		my $file = $filenoext . ".l";
-		if (-e $file)
-		{
-			$self->AddFile($file);
-		}
-
-		$file = $filenoext . ".y";
-		if (-e $file)
-		{
-			$self->AddFile($file);
-		}
-	}
 }
 
 sub ReplaceFile
@@ -114,14 +74,14 @@ sub ReplaceFile
 			if ($file eq $filename)
 			{
 				delete $self->{files}{$file};
-				$self->AddFile($newname);
+				$self->{files}{$newname} = 1;
 				return;
 			}
 		}
 		elsif ($file =~ m/($re)/)
 		{
 			delete $self->{files}{$file};
-			$self->AddFile("$newname/$filename");
+			$self->{files}{"$newname/$filename"} = 1;
 			return;
 		}
 	}
@@ -161,10 +121,7 @@ sub AddReference
 
 	while (my $ref = shift)
 	{
-		if (!grep { $_ eq $ref } @{ $self->{references} })
-		{
-			push @{ $self->{references} }, $ref;
-		}
+		push @{ $self->{references} }, $ref;
 		$self->AddLibrary(
 			"__CFGNAME__/" . $ref->{name} . "/" . $ref->{name} . ".lib");
 	}
@@ -181,11 +138,7 @@ sub AddLibrary
 		$lib = '&quot;' . $lib . "&quot;";
 	}
 
-	if (!grep { $_ eq $lib } @{ $self->{libraries} })
-	{
-		push @{ $self->{libraries} }, $lib;
-	}
-
+	push @{ $self->{libraries} }, $lib;
 	if ($dbgsuffix)
 	{
 		push @{ $self->{suffixlib} }, $lib;
@@ -195,15 +148,13 @@ sub AddLibrary
 
 sub AddIncludeDir
 {
-	my ($self, $incstr) = @_;
+	my ($self, $inc) = @_;
 
-	foreach my $inc (split(/;/, $incstr))
+	if ($self->{includes} ne '')
 	{
-		if (!grep { $_ eq $inc } @{ $self->{includes} })
-		{
-			push @{ $self->{includes} }, $inc;
-		}
+		$self->{includes} .= ';';
 	}
+	$self->{includes} .= $inc;
 	return;
 }
 
@@ -305,11 +256,11 @@ sub AddDir
 			if ($f =~ /^\$\(top_builddir\)\/(.*)/)
 			{
 				$f = $1;
-				$self->AddFile($f);
+				$self->{files}->{$f} = 1;
 			}
 			else
 			{
-				$self->AddFile("$reldir/$f");
+				$self->{files}->{"$reldir/$f"} = 1;
 			}
 		}
 		$mf =~ s{OBJS[^=]*=\s*(.*)$}{}m;

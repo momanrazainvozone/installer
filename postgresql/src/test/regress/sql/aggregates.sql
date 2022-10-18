@@ -2,23 +2,8 @@
 -- AGGREGATES
 --
 
--- directory paths are passed to us in environment variables
-\getenv abs_srcdir PG_ABS_SRCDIR
-
 -- avoid bit-exact output here because operations may not be bit-exact.
 SET extra_float_digits = 0;
-
--- prepare some test data
-CREATE TABLE aggtest (
-	a 			int2,
-	b			float4
-);
-
-\set filename :abs_srcdir '/data/agg.data'
-COPY aggtest FROM :'filename';
-
-ANALYZE aggtest;
-
 
 SELECT avg(four) AS avg_1 FROM onek;
 
@@ -68,8 +53,6 @@ SELECT var_pop('nan'::float4), var_samp('nan'::float4);
 SELECT stddev_pop('nan'::float4), stddev_samp('nan'::float4);
 SELECT var_pop(1.0::numeric), var_samp(2.0::numeric);
 SELECT stddev_pop(3.0::numeric), stddev_samp(4.0::numeric);
-SELECT var_pop('inf'::numeric), var_samp('inf'::numeric);
-SELECT stddev_pop('inf'::numeric), stddev_samp('inf'::numeric);
 SELECT var_pop('nan'::numeric), var_samp('nan'::numeric);
 SELECT stddev_pop('nan'::numeric), stddev_samp('nan'::numeric);
 
@@ -86,26 +69,14 @@ select sum('NaN'::numeric) from generate_series(1,3);
 select avg('NaN'::numeric) from generate_series(1,3);
 
 -- verify correct results for infinite inputs
-SELECT sum(x::float8), avg(x::float8), var_pop(x::float8)
+SELECT avg(x::float8), var_pop(x::float8)
 FROM (VALUES ('1'), ('infinity')) v(x);
-SELECT sum(x::float8), avg(x::float8), var_pop(x::float8)
+SELECT avg(x::float8), var_pop(x::float8)
 FROM (VALUES ('infinity'), ('1')) v(x);
-SELECT sum(x::float8), avg(x::float8), var_pop(x::float8)
+SELECT avg(x::float8), var_pop(x::float8)
 FROM (VALUES ('infinity'), ('infinity')) v(x);
-SELECT sum(x::float8), avg(x::float8), var_pop(x::float8)
+SELECT avg(x::float8), var_pop(x::float8)
 FROM (VALUES ('-infinity'), ('infinity')) v(x);
-SELECT sum(x::float8), avg(x::float8), var_pop(x::float8)
-FROM (VALUES ('-infinity'), ('-infinity')) v(x);
-SELECT sum(x::numeric), avg(x::numeric), var_pop(x::numeric)
-FROM (VALUES ('1'), ('infinity')) v(x);
-SELECT sum(x::numeric), avg(x::numeric), var_pop(x::numeric)
-FROM (VALUES ('infinity'), ('1')) v(x);
-SELECT sum(x::numeric), avg(x::numeric), var_pop(x::numeric)
-FROM (VALUES ('infinity'), ('infinity')) v(x);
-SELECT sum(x::numeric), avg(x::numeric), var_pop(x::numeric)
-FROM (VALUES ('-infinity'), ('infinity')) v(x);
-SELECT sum(x::numeric), avg(x::numeric), var_pop(x::numeric)
-FROM (VALUES ('-infinity'), ('-infinity')) v(x);
 
 -- test accuracy with a large input offset
 SELECT avg(x::float8), var_pop(x::float8)
@@ -227,8 +198,7 @@ CREATE TEMPORARY TABLE bitwise_test(
 -- empty case
 SELECT
   BIT_AND(i2) AS "?",
-  BIT_OR(i4)  AS "?",
-  BIT_XOR(i8) AS "?"
+  BIT_OR(i4)  AS "?"
 FROM bitwise_test;
 
 COPY bitwise_test FROM STDIN NULL 'null';
@@ -250,14 +220,7 @@ SELECT
   BIT_OR(i8)  AS "7",
   BIT_OR(i)   AS "?",
   BIT_OR(x)   AS "7",
-  BIT_OR(y)   AS "1101",
-
-  BIT_XOR(i2) AS "5",
-  BIT_XOR(i4) AS "5",
-  BIT_XOR(i8) AS "5",
-  BIT_XOR(i)  AS "?",
-  BIT_XOR(x)  AS "7",
-  BIT_XOR(y)  AS "1101"
+  BIT_OR(y)   AS "1101"
 FROM bitwise_test;
 
 --
@@ -1028,7 +991,7 @@ ROLLBACK;
 -- Secondly test the case of a parallel aggregate combiner function
 -- returning NULL. For that use normal transition function, but a
 -- combiner function returning NULL.
-BEGIN;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
 CREATE FUNCTION balkifnull(int8, int8)
 RETURNS int8
 PARALLEL SAFE
@@ -1061,7 +1024,7 @@ SELECT balk(hundred) FROM tenk1;
 ROLLBACK;
 
 -- test coverage for aggregate combine/serial/deserial functions
-BEGIN;
+BEGIN ISOLATION LEVEL REPEATABLE READ;
 
 SET parallel_setup_cost = 0;
 SET parallel_tuple_cost = 0;
@@ -1124,11 +1087,9 @@ select v||'a', case when v||'a' = 'aa' then 1 else 0 end, count(*)
 -- Make sure that generation of HashAggregate for uniqification purposes
 -- does not lead to array overflow due to unexpected duplicate hash keys
 -- see CAFeeJoKKu0u+A_A9R9316djW-YW3-+Gtgvy3ju655qRHR3jtdA@mail.gmail.com
-set enable_memoize to off;
 explain (costs off)
   select 1 from tenk1
    where (hundred, thousand) in (select twothousand, twothousand from onek);
-reset enable_memoize;
 
 --
 -- Hash Aggregation Spill tests

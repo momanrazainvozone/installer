@@ -7,7 +7,7 @@ CREATE FUNCTION import_fail() returns text
 except ImportError:
 	return "failed as expected"
 return "succeeded, that wasn''t supposed to happen"'
-    LANGUAGE plpython3u;
+    LANGUAGE plpythonu;
 
 
 CREATE FUNCTION import_succeed() returns text
@@ -28,7 +28,7 @@ except Exception as ex:
 	plpy.notice("import failed -- %s" % str(ex))
 	return "failed, that wasn''t supposed to happen"
 return "succeeded, as expected"'
-    LANGUAGE plpython3u;
+    LANGUAGE plpythonu;
 
 CREATE FUNCTION import_test_one(p text) RETURNS text
 	AS
@@ -39,7 +39,7 @@ except ImportError:
     import sha
     digest = sha.new(p)
 return digest.hexdigest()'
-	LANGUAGE plpython3u;
+	LANGUAGE plpythonu;
 
 CREATE FUNCTION import_test_two(u users) RETURNS text
 	AS
@@ -51,7 +51,7 @@ except ImportError:
     import sha
     digest = sha.new(plain);
 return "sha hash of " + plain + " is " + digest.hexdigest()'
-	LANGUAGE plpython3u;
+	LANGUAGE plpythonu;
 
 
 -- import python modules

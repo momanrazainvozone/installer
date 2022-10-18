@@ -3,7 +3,7 @@
  * archive.c
  *	  Routines to access WAL archives from frontend
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -49,7 +49,10 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 	xlogRestoreCmd = BuildRestoreCommand(restoreCommand, xlogpath,
 										 xlogfname, NULL);
 	if (xlogRestoreCmd == NULL)
-		pg_fatal("cannot use restore_command with %%r placeholder");
+	{
+		pg_log_fatal("cannot use restore_command with %%r placeholder");
+		exit(1);
+	}
 
 	/*
 	 * Execute restore_command, which should copy the missing file from
@@ -67,16 +70,22 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 		if (stat(xlogpath, &stat_buf) == 0)
 		{
 			if (expectedSize > 0 && stat_buf.st_size != expectedSize)
-				pg_fatal("unexpected file size for \"%s\": %lld instead of %lld",
-						 xlogfname, (long long int) stat_buf.st_size,
-						 (long long int) expectedSize);
+			{
+				pg_log_fatal("unexpected file size for \"%s\": %lu instead of %lu",
+							 xlogfname, (unsigned long) stat_buf.st_size,
+							 (unsigned long) expectedSize);
+				exit(1);
+			}
 			else
 			{
 				int			xlogfd = open(xlogpath, O_RDONLY | PG_BINARY, 0);
 
 				if (xlogfd < 0)
-					pg_fatal("could not open file \"%s\" restored from archive: %m",
-							 xlogpath);
+				{
+					pg_log_fatal("could not open file \"%s\" restored from archive: %m",
+								 xlogpath);
+					exit(1);
+				}
 				else
 					return xlogfd;
 			}
@@ -84,8 +93,11 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 		else
 		{
 			if (errno != ENOENT)
-				pg_fatal("could not stat file \"%s\": %m",
-						 xlogpath);
+			{
+				pg_log_fatal("could not stat file \"%s\": %m",
+							 xlogpath);
+				exit(1);
+			}
 		}
 	}
 
@@ -96,8 +108,11 @@ RestoreArchivedFile(const char *path, const char *xlogfname,
 	 * fatal too.
 	 */
 	if (wait_result_is_any_signal(rc, true))
-		pg_fatal("restore_command failed: %s",
-				 wait_result_to_str(rc));
+	{
+		pg_log_fatal("restore_command failed: %s",
+					 wait_result_to_str(rc));
+		exit(1);
+	}
 
 	/*
 	 * The file is not available, so just let the caller decide what to do

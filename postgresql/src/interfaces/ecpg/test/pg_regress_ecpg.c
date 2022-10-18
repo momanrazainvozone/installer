@@ -8,7 +8,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/interfaces/ecpg/test/pg_regress_ecpg.c
@@ -19,23 +19,19 @@
 #include "postgres_fe.h"
 
 #include "pg_regress.h"
-#include "common/string.h"
-#include "lib/stringinfo.h"
 
+#define LINEBUFSIZE 300
 
-/*
- * Create a filtered copy of sourcefile, removing any path
- * appearing in #line directives; for example, replace
- * #line x "./../bla/foo.h" with #line x "foo.h".
- * This is needed because the path part can vary depending
- * on compiler, platform, build options, etc.
- */
 static void
-ecpg_filter_source(const char *sourcefile, const char *outfile)
+ecpg_filter(const char *sourcefile, const char *outfile)
 {
+	/*
+	 * Create a filtered copy of sourcefile, replacing #line x
+	 * "./../bla/foo.h" with #line x "foo.h"
+	 */
 	FILE	   *s,
 			   *t;
-	StringInfoData linebuf;
+	char		linebuf[LINEBUFSIZE];
 
 	s = fopen(sourcefile, "r");
 	if (!s)
@@ -50,14 +46,13 @@ ecpg_filter_source(const char *sourcefile, const char *outfile)
 		exit(2);
 	}
 
-	initStringInfo(&linebuf);
-
-	while (pg_get_line_buf(s, &linebuf))
+	while (fgets(linebuf, LINEBUFSIZE, s))
 	{
 		/* check for "#line " in the beginning */
-		if (strstr(linebuf.data, "#line ") == linebuf.data)
+		if (strstr(linebuf, "#line ") == linebuf)
 		{
-			char	   *p = strchr(linebuf.data, '"');
+			char	   *p = strchr(linebuf, '"');
+			char	   *n;
 			int			plen = 1;
 
 			while (*p && (*(p + plen) == '.' || strchr(p + plen, '/') != NULL))
@@ -67,76 +62,15 @@ ecpg_filter_source(const char *sourcefile, const char *outfile)
 			/* plen is one more than the number of . and / characters */
 			if (plen > 1)
 			{
-				memmove(p + 1, p + plen, strlen(p + plen) + 1);
-				/* we don't bother to fix up linebuf.len */
+				n = (char *) malloc(plen);
+				StrNCpy(n, p + 1, plen);
+				replace_string(linebuf, n, "");
 			}
 		}
-		fputs(linebuf.data, t);
+		fputs(linebuf, t);
 	}
-
-	pfree(linebuf.data);
 	fclose(s);
 	fclose(t);
-}
-
-/*
- * Remove the details of connection failure error messages
- * in a test result file, since the target host/pathname and/or port
- * can vary.  Rewrite the result file in-place.
- *
- * At some point it might be interesting to unify this with
- * ecpg_filter_source, but building a general pattern matcher
- * is no fun, nor does it seem desirable to introduce a
- * dependency on an external one.
- */
-static void
-ecpg_filter_stderr(const char *resultfile, const char *tmpfile)
-{
-	FILE	   *s,
-			   *t;
-	StringInfoData linebuf;
-
-	s = fopen(resultfile, "r");
-	if (!s)
-	{
-		fprintf(stderr, "Could not open file %s for reading\n", resultfile);
-		exit(2);
-	}
-	t = fopen(tmpfile, "w");
-	if (!t)
-	{
-		fprintf(stderr, "Could not open file %s for writing\n", tmpfile);
-		exit(2);
-	}
-
-	initStringInfo(&linebuf);
-
-	while (pg_get_line_buf(s, &linebuf))
-	{
-		char	   *p1 = strstr(linebuf.data, "connection to server ");
-
-		if (p1)
-		{
-			char	   *p2 = strstr(p1, "failed: ");
-
-			if (p2)
-			{
-				memmove(p1 + 21, p2, strlen(p2) + 1);
-				/* we don't bother to fix up linebuf.len */
-			}
-		}
-		fputs(linebuf.data, t);
-	}
-
-	pfree(linebuf.data);
-	fclose(s);
-	fclose(t);
-	if (rename(tmpfile, resultfile) != 0)
-	{
-		fprintf(stderr, "Could not overwrite file %s with %s\n",
-				resultfile, tmpfile);
-		exit(2);
-	}
 }
 
 /*
@@ -153,47 +87,40 @@ ecpg_start_test(const char *testname,
 	PID_TYPE	pid;
 	char		inprg[MAXPGPATH];
 	char		insource[MAXPGPATH];
-	StringInfoData testname_dash;
-	char		outfile_stdout[MAXPGPATH],
+	char	   *outfile_stdout,
 				expectfile_stdout[MAXPGPATH];
-	char		outfile_stderr[MAXPGPATH],
+	char	   *outfile_stderr,
 				expectfile_stderr[MAXPGPATH];
-	char		outfile_source[MAXPGPATH],
+	char	   *outfile_source,
 				expectfile_source[MAXPGPATH];
 	char		cmd[MAXPGPATH * 3];
+	char	   *testname_dash;
 	char	   *appnameenv;
 
 	snprintf(inprg, sizeof(inprg), "%s/%s", inputdir, testname);
-	snprintf(insource, sizeof(insource), "%s.c", testname);
 
-	/* make a version of the test name that has dashes in place of slashes */
-	initStringInfo(&testname_dash);
-	appendStringInfoString(&testname_dash, testname);
-	for (char *c = testname_dash.data; *c != '\0'; c++)
-	{
-		if (*c == '/')
-			*c = '-';
-	}
-
+	testname_dash = strdup(testname);
+	replace_string(testname_dash, "/", "-");
 	snprintf(expectfile_stdout, sizeof(expectfile_stdout),
 			 "%s/expected/%s.stdout",
-			 outputdir, testname_dash.data);
+			 outputdir, testname_dash);
 	snprintf(expectfile_stderr, sizeof(expectfile_stderr),
 			 "%s/expected/%s.stderr",
-			 outputdir, testname_dash.data);
+			 outputdir, testname_dash);
 	snprintf(expectfile_source, sizeof(expectfile_source),
 			 "%s/expected/%s.c",
-			 outputdir, testname_dash.data);
+			 outputdir, testname_dash);
 
-	snprintf(outfile_stdout, sizeof(outfile_stdout),
-			 "%s/results/%s.stdout",
-			 outputdir, testname_dash.data);
-	snprintf(outfile_stderr, sizeof(outfile_stderr),
-			 "%s/results/%s.stderr",
-			 outputdir, testname_dash.data);
-	snprintf(outfile_source, sizeof(outfile_source),
-			 "%s/results/%s.c",
-			 outputdir, testname_dash.data);
+	/*
+	 * We can use replace_string() here because the replacement string does
+	 * not occupy more space than the replaced one.
+	 */
+	outfile_stdout = strdup(expectfile_stdout);
+	replace_string(outfile_stdout, "/expected/", "/results/");
+	outfile_stderr = strdup(expectfile_stderr);
+	replace_string(outfile_stderr, "/expected/", "/results/");
+	outfile_source = strdup(expectfile_source);
+	replace_string(outfile_source, "/expected/", "/results/");
 
 	add_stringlist_item(resultfiles, outfile_stdout);
 	add_stringlist_item(expectfiles, expectfile_stdout);
@@ -207,7 +134,10 @@ ecpg_start_test(const char *testname,
 	add_stringlist_item(expectfiles, expectfile_source);
 	add_stringlist_item(tags, "source");
 
-	ecpg_filter_source(insource, outfile_source);
+	snprintf(insource, sizeof(insource), "%s.c", testname);
+	ecpg_filter(insource, outfile_source);
+
+	snprintf(inprg, sizeof(inprg), "%s/%s", inputdir, testname);
 
 	snprintf(cmd, sizeof(cmd),
 			 "\"%s\" >\"%s\" 2>\"%s\"",
@@ -215,9 +145,8 @@ ecpg_start_test(const char *testname,
 			 outfile_stdout,
 			 outfile_stderr);
 
-	appnameenv = psprintf("ecpg/%s", testname_dash.data);
-	setenv("PGAPPNAME", appnameenv, 1);
-	free(appnameenv);
+	appnameenv = psprintf("PGAPPNAME=ecpg/%s", testname_dash);
+	putenv(appnameenv);
 
 	pid = spawn_process(cmd);
 
@@ -229,25 +158,14 @@ ecpg_start_test(const char *testname,
 	}
 
 	unsetenv("PGAPPNAME");
+	free(appnameenv);
 
-	free(testname_dash.data);
+	free(testname_dash);
+	free(outfile_stdout);
+	free(outfile_stderr);
+	free(outfile_source);
 
 	return pid;
-}
-
-static void
-ecpg_postprocess_result(const char *filename)
-{
-	int			nlen = strlen(filename);
-
-	/* Only stderr files require filtering, at the moment */
-	if (nlen > 7 && strcmp(filename + nlen - 7, ".stderr") == 0)
-	{
-		char	   *tmpfile = psprintf("%s.tmp", filename);
-
-		ecpg_filter_stderr(filename, tmpfile);
-		pfree(tmpfile);
-	}
 }
 
 static void
@@ -259,8 +177,5 @@ ecpg_init(int argc, char *argv[])
 int
 main(int argc, char *argv[])
 {
-	return regression_main(argc, argv,
-						   ecpg_init,
-						   ecpg_start_test,
-						   ecpg_postprocess_result);
+	return regression_main(argc, argv, ecpg_init, ecpg_start_test);
 }

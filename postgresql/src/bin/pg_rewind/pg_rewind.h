@@ -3,7 +3,7 @@
  * pg_rewind.h
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *-------------------------------------------------------------------------
@@ -20,18 +20,25 @@
 
 /* Configuration options */
 extern char *datadir_target;
+extern char *datadir_source;
+extern char *connstr_source;
 extern bool showprogress;
 extern bool dry_run;
-extern bool do_sync;
 extern int	WalSegSz;
 
 /* Target history */
 extern TimeLineHistoryEntry *targetHistory;
 extern int	targetNentries;
 
+/* general state */
+extern PGconn *conn;
+
 /* Progress counters */
 extern uint64 fetch_size;
 extern uint64 fetch_done;
+
+/* logging support */
+#define pg_fatal(...) do { pg_log_fatal(__VA_ARGS__); exit(1); } while(0)
 
 /* in parsexlog.c */
 extern void extractPageMap(const char *datadir, XLogRecPtr startpoint,

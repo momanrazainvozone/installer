@@ -3,7 +3,7 @@
  * event_trigger.c
  *	  PostgreSQL EVENT TRIGGER support code.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -177,7 +177,7 @@ CreateEventTrigger(CreateEventTrigStmt *stmt)
 	/* Find and validate the trigger function. */
 	funcoid = LookupFuncName(stmt->funcname, 0, NULL, false);
 	funcrettype = get_func_rettype(funcoid);
-	if (funcrettype != EVENT_TRIGGEROID)
+	if (funcrettype != EVTTRIGGEROID)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
 				 errmsg("function %s must return type %s",
@@ -353,6 +353,28 @@ filter_list_to_array(List *filterlist)
 
 	return PointerGetDatum(construct_array(data, l, TEXTOID,
 										   -1, false, TYPALIGN_INT));
+}
+
+/*
+ * Guts of event trigger deletion.
+ */
+void
+RemoveEventTriggerById(Oid trigOid)
+{
+	Relation	tgrel;
+	HeapTuple	tup;
+
+	tgrel = table_open(EventTriggerRelationId, RowExclusiveLock);
+
+	tup = SearchSysCache1(EVENTTRIGGEROID, ObjectIdGetDatum(trigOid));
+	if (!HeapTupleIsValid(tup))
+		elog(ERROR, "cache lookup failed for event trigger %u", trigOid);
+
+	CatalogTupleDelete(tgrel, &tup->t_self);
+
+	ReleaseSysCache(tup);
+
+	table_close(tgrel, RowExclusiveLock);
 }
 
 /*
@@ -940,7 +962,6 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_DATABASE:
 		case OBJECT_TABLESPACE:
 		case OBJECT_ROLE:
-		case OBJECT_PARAMETER_ACL:
 			/* no support for global objects */
 			return false;
 		case OBJECT_EVENT_TRIGGER:
@@ -974,7 +995,6 @@ EventTriggerSupportsObjectType(ObjectType obtype)
 		case OBJECT_POLICY:
 		case OBJECT_PROCEDURE:
 		case OBJECT_PUBLICATION:
-		case OBJECT_PUBLICATION_NAMESPACE:
 		case OBJECT_PUBLICATION_REL:
 		case OBJECT_ROUTINE:
 		case OBJECT_RULE:
@@ -1016,7 +1036,6 @@ EventTriggerSupportsObjectClass(ObjectClass objclass)
 		case OCLASS_DATABASE:
 		case OCLASS_TBLSPACE:
 		case OCLASS_ROLE:
-		case OCLASS_PARAMETER_ACL:
 			/* no support for global objects */
 			return false;
 		case OCLASS_EVENT_TRIGGER:
@@ -1053,7 +1072,6 @@ EventTriggerSupportsObjectClass(ObjectClass objclass)
 		case OCLASS_EXTENSION:
 		case OCLASS_POLICY:
 		case OCLASS_PUBLICATION:
-		case OCLASS_PUBLICATION_NAMESPACE:
 		case OCLASS_PUBLICATION_REL:
 		case OCLASS_SUBSCRIPTION:
 		case OCLASS_TRANSFORM:
@@ -1271,11 +1289,10 @@ EventTriggerSQLDropAddObject(const ObjectAddress *object, bool original, bool no
 
 	/* object identity, objname and objargs */
 	obj->objidentity =
-		getObjectIdentityParts(&obj->address, &obj->addrnames, &obj->addrargs,
-							   false);
+		getObjectIdentityParts(&obj->address, &obj->addrnames, &obj->addrargs);
 
 	/* object type */
-	obj->objecttype = getObjectTypeDescription(&obj->address, false);
+	obj->objecttype = getObjectTypeDescription(&obj->address);
 
 	slist_push_head(&(currentEventTriggerState->SQLDropList), &obj->next);
 
@@ -1292,6 +1309,10 @@ Datum
 pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
 	slist_iter	iter;
 
 	/*
@@ -1304,8 +1325,30 @@ pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 				 errmsg("%s can only be called in a sql_drop event trigger function",
 						"pg_event_trigger_dropped_objects()")));
 
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
 	/* Build tuplestore to hold the result rows */
-	SetSingleFuncCall(fcinfo, 0);
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
 
 	slist_foreach(iter, &(currentEventTriggerState->SQLDropList))
 	{
@@ -1374,9 +1417,11 @@ pg_event_trigger_dropped_objects(PG_FUNCTION_ARGS)
 			nulls[i++] = true;
 		}
 
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
-							 values, nulls);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
 }
@@ -1823,6 +1868,10 @@ Datum
 pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 {
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
 	ListCell   *lc;
 
 	/*
@@ -1834,8 +1883,30 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				 errmsg("%s can only be called in an event trigger function",
 						"pg_event_trigger_ddl_commands()")));
 
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
 	/* Build tuplestore to hold the result rows */
-	SetSingleFuncCall(fcinfo, 0);
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
 
 	foreach(lc, currentEventTriggerState->commandList)
 	{
@@ -1886,19 +1957,8 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 					else if (cmd->type == SCT_AlterTSConfig)
 						addr = cmd->d.atscfg.address;
 
-					/*
-					 * If an object was dropped in the same command we may end
-					 * up in a situation where we generated a message but can
-					 * no longer look for the object information, so skip it
-					 * rather than failing.  This can happen for example with
-					 * some subcommand combinations of ALTER TABLE.
-					 */
-					identity = getObjectIdentity(&addr, true);
-					if (identity == NULL)
-						continue;
-
-					/* The type can never be NULL. */
-					type = getObjectTypeDescription(&addr, true);
+					type = getObjectTypeDescription(&addr);
+					identity = getObjectIdentity(&addr);
 
 					/*
 					 * Obtain schema name, if any ("pg_temp" if a temp
@@ -1932,7 +1992,11 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 								elog(ERROR,
 									 "invalid null namespace in object %u/%u/%d",
 									 addr.classId, addr.objectId, addr.objectSubId);
-							schema = get_namespace_name_or_temp(schema_oid);
+							/* XXX not quite get_namespace_name_or_temp */
+							if (isAnyTempNamespace(schema_oid))
+								schema = pstrdup("pg_temp");
+							else
+								schema = get_namespace_name(schema_oid);
 
 							table_close(catalog, AccessShareLock);
 						}
@@ -2006,9 +2070,11 @@ pg_event_trigger_ddl_commands(PG_FUNCTION_ARGS)
 				break;
 		}
 
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc,
-							 values, nulls);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 	}
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
 
 	PG_RETURN_VOID();
 }
@@ -2044,8 +2110,6 @@ stringify_grant_objtype(ObjectType objtype)
 			return "LARGE OBJECT";
 		case OBJECT_SCHEMA:
 			return "SCHEMA";
-		case OBJECT_PARAMETER_ACL:
-			return "PARAMETER";
 		case OBJECT_PROCEDURE:
 			return "PROCEDURE";
 		case OBJECT_ROUTINE:
@@ -2076,7 +2140,6 @@ stringify_grant_objtype(ObjectType objtype)
 		case OBJECT_OPFAMILY:
 		case OBJECT_POLICY:
 		case OBJECT_PUBLICATION:
-		case OBJECT_PUBLICATION_NAMESPACE:
 		case OBJECT_PUBLICATION_REL:
 		case OBJECT_ROLE:
 		case OBJECT_RULE:
@@ -2157,10 +2220,8 @@ stringify_adefprivs_objtype(ObjectType objtype)
 		case OBJECT_OPCLASS:
 		case OBJECT_OPERATOR:
 		case OBJECT_OPFAMILY:
-		case OBJECT_PARAMETER_ACL:
 		case OBJECT_POLICY:
 		case OBJECT_PUBLICATION:
-		case OBJECT_PUBLICATION_NAMESPACE:
 		case OBJECT_PUBLICATION_REL:
 		case OBJECT_ROLE:
 		case OBJECT_RULE:

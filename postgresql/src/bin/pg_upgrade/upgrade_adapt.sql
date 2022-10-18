@@ -18,8 +18,7 @@ SELECT
   ver <= 904 AS oldpgversion_le94,
   ver <= 906 AS oldpgversion_le96,
   ver <= 1000 AS oldpgversion_le10,
-  ver <= 1100 AS oldpgversion_le11,
-  ver <= 1300 AS oldpgversion_le13
+  ver <= 1100 AS oldpgversion_le11
   FROM (SELECT current_setting('server_version_num')::int / 100 AS ver) AS v;
 \gset
 
@@ -78,14 +77,4 @@ DO $stmt$
     execute 'ALTER TABLE ' || rec || ' SET WITHOUT OIDS';
   END LOOP;
   END; $stmt$;
-\endif
-
--- Objects last appearing in 13.
-\if :oldpgversion_le13
--- Until v10, operators could only be dropped one at a time, so be careful
--- to stick with one command for each drop here.
-DROP OPERATOR public.#@# (pg_catalog.int8, NONE);
-DROP OPERATOR public.#%# (pg_catalog.int8, NONE);
-DROP OPERATOR public.!=- (pg_catalog.int8, NONE);
-DROP OPERATOR public.#@%# (pg_catalog.int8, NONE);
 \endif

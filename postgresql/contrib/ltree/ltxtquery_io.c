@@ -260,6 +260,7 @@ makepol(QPRS_STATE *state)
 						 errmsg("syntax error")));
 
 				return ERR;
+
 		}
 	}
 	while (lenstack)

@@ -3,7 +3,7 @@
  * array_typanalyze.c
  *	  Functions for gathering statistics from array columns
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -86,9 +86,9 @@ static void prune_element_hashtable(HTAB *elements_tab, int b_current);
 static uint32 element_hash(const void *key, Size keysize);
 static int	element_match(const void *key1, const void *key2, Size keysize);
 static int	element_compare(const void *key1, const void *key2);
-static int	trackitem_compare_frequencies_desc(const void *e1, const void *e2, void *arg);
-static int	trackitem_compare_element(const void *e1, const void *e2, void *arg);
-static int	countitem_compare_count(const void *e1, const void *e2, void *arg);
+static int	trackitem_compare_frequencies_desc(const void *e1, const void *e2);
+static int	trackitem_compare_element(const void *e1, const void *e2);
+static int	countitem_compare_count(const void *e1, const void *e2);
 
 
 /*
@@ -218,6 +218,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 {
 	ArrayAnalyzeExtraData *extra_data;
 	int			num_mcelem;
+	int			null_cnt = 0;
 	int			null_elem_cnt = 0;
 	int			analyzed_rows = 0;
 
@@ -276,6 +277,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 	 * worry about overflowing the initial size. Also we don't need to pay any
 	 * attention to locking and memory management.
 	 */
+	MemSet(&elem_hash_ctl, 0, sizeof(elem_hash_ctl));
 	elem_hash_ctl.keysize = sizeof(Datum);
 	elem_hash_ctl.entrysize = sizeof(TrackItem);
 	elem_hash_ctl.hash = element_hash;
@@ -287,6 +289,7 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 							   HASH_ELEM | HASH_FUNCTION | HASH_COMPARE | HASH_CONTEXT);
 
 	/* hashtable for array distinct elements counts */
+	MemSet(&count_hash_ctl, 0, sizeof(count_hash_ctl));
 	count_hash_ctl.keysize = sizeof(int);
 	count_hash_ctl.entrysize = sizeof(DECountItem);
 	count_hash_ctl.hcxt = CurrentMemoryContext;
@@ -319,7 +322,8 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		value = fetchfunc(stats, array_no, &isnull);
 		if (isnull)
 		{
-			/* ignore arrays that are null overall */
+			/* array is null, just count that */
+			null_cnt++;
 			continue;
 		}
 
@@ -500,8 +504,8 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 		 */
 		if (num_mcelem < track_len)
 		{
-			qsort_interruptible(sort_table, track_len, sizeof(TrackItem *),
-								trackitem_compare_frequencies_desc, NULL);
+			qsort(sort_table, track_len, sizeof(TrackItem *),
+				  trackitem_compare_frequencies_desc);
 			/* reset minfreq to the smallest frequency we're keeping */
 			minfreq = sort_table[num_mcelem - 1]->frequency;
 		}
@@ -520,8 +524,8 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 			 * the element type's default comparison function.  This permits
 			 * fast binary searches in selectivity estimation functions.
 			 */
-			qsort_interruptible(sort_table, num_mcelem, sizeof(TrackItem *),
-								trackitem_compare_element, NULL);
+			qsort(sort_table, num_mcelem, sizeof(TrackItem *),
+				  trackitem_compare_element);
 
 			/* Must copy the target values into anl_context */
 			old_context = MemoryContextSwitchTo(stats->anl_context);
@@ -597,9 +601,8 @@ compute_array_stats(VacAttrStats *stats, AnalyzeAttrFetchFunc fetchfunc,
 			{
 				sorted_count_items[j++] = count_item;
 			}
-			qsort_interruptible(sorted_count_items, count_items_count,
-								sizeof(DECountItem *),
-								countitem_compare_count, NULL);
+			qsort(sorted_count_items, count_items_count,
+				  sizeof(DECountItem *), countitem_compare_count);
 
 			/*
 			 * Prepare to fill stanumbers with the histogram, followed by the
@@ -750,10 +753,10 @@ element_compare(const void *key1, const void *key2)
 }
 
 /*
- * Comparator for sorting TrackItems by frequencies (descending sort)
+ * qsort() comparator for sorting TrackItems by frequencies (descending sort)
  */
 static int
-trackitem_compare_frequencies_desc(const void *e1, const void *e2, void *arg)
+trackitem_compare_frequencies_desc(const void *e1, const void *e2)
 {
 	const TrackItem *const *t1 = (const TrackItem *const *) e1;
 	const TrackItem *const *t2 = (const TrackItem *const *) e2;
@@ -762,10 +765,10 @@ trackitem_compare_frequencies_desc(const void *e1, const void *e2, void *arg)
 }
 
 /*
- * Comparator for sorting TrackItems by element values
+ * qsort() comparator for sorting TrackItems by element values
  */
 static int
-trackitem_compare_element(const void *e1, const void *e2, void *arg)
+trackitem_compare_element(const void *e1, const void *e2)
 {
 	const TrackItem *const *t1 = (const TrackItem *const *) e1;
 	const TrackItem *const *t2 = (const TrackItem *const *) e2;
@@ -774,10 +777,10 @@ trackitem_compare_element(const void *e1, const void *e2, void *arg)
 }
 
 /*
- * Comparator for sorting DECountItems by count
+ * qsort() comparator for sorting DECountItems by count
  */
 static int
-countitem_compare_count(const void *e1, const void *e2, void *arg)
+countitem_compare_count(const void *e1, const void *e2)
 {
 	const DECountItem *const *t1 = (const DECountItem *const *) e1;
 	const DECountItem *const *t2 = (const DECountItem *const *) e2;

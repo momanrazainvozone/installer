@@ -2,7 +2,7 @@
  *
  *	  WIN <--> UTF8
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -48,11 +48,8 @@ PG_FUNCTION_INFO_V1(utf8_to_win);
  *		INTEGER,	-- destination encoding id
  *		CSTRING,	-- source string (null terminated C string)
  *		CSTRING,	-- destination string (null terminated C string)
- *		INTEGER,	-- source string length
- *		BOOL		-- if true, don't throw an error if conversion fails
- * ) returns INTEGER;
- *
- * Returns the number of bytes successfully converted.
+ *		INTEGER		-- source string length
+ * ) returns VOID;
  * ----------
  */
 
@@ -84,7 +81,6 @@ win_to_utf8(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
 	int			i;
 
 	CHECK_ENCODING_CONVERSION_ARGS(-1, PG_UTF8);
@@ -93,15 +89,12 @@ win_to_utf8(PG_FUNCTION_ARGS)
 	{
 		if (encoding == maps[i].encoding)
 		{
-			int			converted;
-
-			converted = LocalToUtf(src, len, dest,
-								   maps[i].map1,
-								   NULL, 0,
-								   NULL,
-								   encoding,
-								   noError);
-			PG_RETURN_INT32(converted);
+			LocalToUtf(src, len, dest,
+					   maps[i].map1,
+					   NULL, 0,
+					   NULL,
+					   encoding);
+			PG_RETURN_VOID();
 		}
 	}
 
@@ -110,7 +103,7 @@ win_to_utf8(PG_FUNCTION_ARGS)
 			 errmsg("unexpected encoding ID %d for WIN character sets",
 					encoding)));
 
-	PG_RETURN_INT32(0);
+	PG_RETURN_VOID();
 }
 
 Datum
@@ -120,7 +113,6 @@ utf8_to_win(PG_FUNCTION_ARGS)
 	unsigned char *src = (unsigned char *) PG_GETARG_CSTRING(2);
 	unsigned char *dest = (unsigned char *) PG_GETARG_CSTRING(3);
 	int			len = PG_GETARG_INT32(4);
-	bool		noError = PG_GETARG_BOOL(5);
 	int			i;
 
 	CHECK_ENCODING_CONVERSION_ARGS(PG_UTF8, -1);
@@ -129,15 +121,12 @@ utf8_to_win(PG_FUNCTION_ARGS)
 	{
 		if (encoding == maps[i].encoding)
 		{
-			int			converted;
-
-			converted = UtfToLocal(src, len, dest,
-								   maps[i].map2,
-								   NULL, 0,
-								   NULL,
-								   encoding,
-								   noError);
-			PG_RETURN_INT32(converted);
+			UtfToLocal(src, len, dest,
+					   maps[i].map2,
+					   NULL, 0,
+					   NULL,
+					   encoding);
+			PG_RETURN_VOID();
 		}
 	}
 
@@ -146,5 +135,5 @@ utf8_to_win(PG_FUNCTION_ARGS)
 			 errmsg("unexpected encoding ID %d for WIN character sets",
 					encoding)));
 
-	PG_RETURN_INT32(0);
+	PG_RETURN_VOID();
 }

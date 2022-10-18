@@ -3,7 +3,7 @@
  * parse_manifest.c
  *	  Parse a backup manifest in JSON format.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_verifybackup/parse_manifest.c
@@ -147,7 +147,7 @@ json_parse_manifest(JsonManifestParseContext *context, char *buffer,
 	/* Run the actual JSON parser. */
 	json_error = pg_parse_json(lex, &sem);
 	if (json_error != JSON_SUCCESS)
-		json_manifest_parse_failure(context, "parsing failed");
+		json_manifest_parse_failure(context, json_errdetail(json_error, lex));
 	if (parse.state != JM_EXPECT_EOF)
 		json_manifest_parse_failure(context, "manifest ended unexpectedly");
 
@@ -624,7 +624,7 @@ verify_manifest_checksum(JsonManifestParseState *parse, char *buffer,
 	size_t		number_of_newlines = 0;
 	size_t		ultimate_newline = 0;
 	size_t		penultimate_newline = 0;
-	pg_cryptohash_ctx *manifest_ctx;
+	pg_sha256_ctx manifest_ctx;
 	uint8		manifest_checksum_actual[PG_SHA256_DIGEST_LENGTH];
 	uint8		manifest_checksum_expected[PG_SHA256_DIGEST_LENGTH];
 
@@ -652,16 +652,9 @@ verify_manifest_checksum(JsonManifestParseState *parse, char *buffer,
 									"last line not newline-terminated");
 
 	/* Checksum the rest. */
-	manifest_ctx = pg_cryptohash_create(PG_SHA256);
-	if (manifest_ctx == NULL)
-		context->error_cb(context, "out of memory");
-	if (pg_cryptohash_init(manifest_ctx) < 0)
-		context->error_cb(context, "could not initialize checksum of manifest");
-	if (pg_cryptohash_update(manifest_ctx, (uint8 *) buffer, penultimate_newline + 1) < 0)
-		context->error_cb(context, "could not update checksum of manifest");
-	if (pg_cryptohash_final(manifest_ctx, manifest_checksum_actual,
-							sizeof(manifest_checksum_actual)) < 0)
-		context->error_cb(context, "could not finalize checksum of manifest");
+	pg_sha256_init(&manifest_ctx);
+	pg_sha256_update(&manifest_ctx, (uint8 *) buffer, penultimate_newline + 1);
+	pg_sha256_final(&manifest_ctx, manifest_checksum_actual);
 
 	/* Now verify it. */
 	if (parse->manifest_checksum == NULL)
@@ -674,7 +667,6 @@ verify_manifest_checksum(JsonManifestParseState *parse, char *buffer,
 	if (memcmp(manifest_checksum_actual, manifest_checksum_expected,
 			   PG_SHA256_DIGEST_LENGTH) != 0)
 		context->error_cb(context, "manifest checksum mismatch");
-	pg_cryptohash_free(manifest_ctx);
 }
 
 /*

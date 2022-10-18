@@ -1,6 +1,8 @@
 --
 -- PGP Armor
 --
+-- ensure consistent test output regardless of the default bytea format
+SET bytea_output TO escape;
 select armor('');
             armor            
 -----------------------------
@@ -22,15 +24,15 @@ select armor('test');
  
 (1 row)
 
-select encode(dearmor(armor('')), 'escape');
- encode 
---------
+select dearmor(armor(''));
+ dearmor 
+---------
  
 (1 row)
 
-select encode(dearmor(armor('zooka')), 'escape');
- encode 
---------
+select dearmor(armor('zooka'));
+ dearmor 
+---------
  zooka
 (1 row)
 
@@ -48,7 +50,7 @@ select armor('0123456789abcdef0123456789abcdef0123456789abcdef
 (1 row)
 
 -- lots formatting
-select encode(dearmor(' a pgp msg:
+select dearmor(' a pgp msg:
 
 -----BEGIN PGP MESSAGE-----
 Comment: Some junk
@@ -57,14 +59,14 @@ em9va2E=
 
   =D5cR
 
------END PGP MESSAGE-----'), 'escape');
- encode 
---------
+-----END PGP MESSAGE-----');
+ dearmor 
+---------
  zooka
 (1 row)
 
 -- lots messages
-select encode(dearmor('
+select dearmor('
 wrong packet:
   -----BEGIN PGP MESSAGE-----
 
@@ -85,9 +87,9 @@ use only first packet
 d3Jvbmc=
 =vCYP
 -----END PGP MESSAGE-----
-'), 'escape');
- encode 
---------
+');
+ dearmor 
+---------
  right
 (1 row)
 

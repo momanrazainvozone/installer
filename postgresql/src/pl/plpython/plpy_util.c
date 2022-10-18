@@ -78,6 +78,12 @@ PLyUnicode_Bytes(PyObject *unicode)
  * Convert a Python unicode object to a C string in PostgreSQL server
  * encoding.  No Python object reference is passed out of this
  * function.  The result is palloc'ed.
+ *
+ * Note that this function is disguised as PyString_AsString() when
+ * using Python 3.  That function returns a pointer into the internal
+ * memory of the argument, which isn't exactly the interface of this
+ * function.  But in either case you get a rather short-lived
+ * reference that you ought to better leave alone.
  */
 char *
 PLyUnicode_AsString(PyObject *unicode)
@@ -89,6 +95,7 @@ PLyUnicode_AsString(PyObject *unicode)
 	return rv;
 }
 
+#if PY_MAJOR_VERSION >= 3
 /*
  * Convert a C string in the PostgreSQL server encoding to a Python
  * unicode object.  Reference ownership is passed to the caller.
@@ -119,3 +126,5 @@ PLyUnicode_FromString(const char *s)
 {
 	return PLyUnicode_FromStringAndSize(s, strlen(s));
 }
+
+#endif							/* PY_MAJOR_VERSION >= 3 */

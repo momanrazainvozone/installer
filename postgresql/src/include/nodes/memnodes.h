@@ -4,7 +4,7 @@
  *	  POSTGRES memory context node definitions.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/nodes/memnodes.h
@@ -52,8 +52,7 @@ typedef struct MemoryContextCounters
  */
 
 typedef void (*MemoryStatsPrintFunc) (MemoryContext context, void *passthru,
-									  const char *stats_string,
-									  bool print_to_stderr);
+									  const char *stats_string);
 
 typedef struct MemoryContextMethods
 {
@@ -67,8 +66,7 @@ typedef struct MemoryContextMethods
 	bool		(*is_empty) (MemoryContext context);
 	void		(*stats) (MemoryContext context,
 						  MemoryStatsPrintFunc printfunc, void *passthru,
-						  MemoryContextCounters *totals,
-						  bool print_to_stderr);
+						  MemoryContextCounters *totals);
 #ifdef MEMORY_CONTEXT_CHECKING
 	void		(*check) (MemoryContext context);
 #endif

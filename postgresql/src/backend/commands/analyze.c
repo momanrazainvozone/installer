@@ -3,7 +3,7 @@
  * analyze.c
  *	  the Postgres statistics generator
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -38,7 +38,6 @@
 #include "commands/progress.h"
 #include "commands/tablecmds.h"
 #include "commands/vacuum.h"
-#include "common/pg_prng.h"
 #include "executor/executor.h"
 #include "foreign/fdwapi.h"
 #include "miscadmin.h"
@@ -64,7 +63,6 @@
 #include "utils/pg_rusage.h"
 #include "utils/sampling.h"
 #include "utils/sortsupport.h"
-#include "utils/spccache.h"
 #include "utils/syscache.h"
 #include "utils/timestamp.h"
 
@@ -100,7 +98,7 @@ static VacAttrStats *examine_attribute(Relation onerel, int attnum,
 static int	acquire_sample_rows(Relation onerel, int elevel,
 								HeapTuple *rows, int targrows,
 								double *totalrows, double *totaldeadrows);
-static int	compare_rows(const void *a, const void *b, void *arg);
+static int	compare_rows(const void *a, const void *b);
 static int	acquire_inherited_sample_rows(Relation onerel, int elevel,
 										  HeapTuple *rows, int targrows,
 										  double *totalrows, double *totaldeadrows);
@@ -249,8 +247,11 @@ analyze_rel(Oid relid, RangeVar *relation,
 	}
 
 	/*
-	 * OK, let's do it.  First, initialize progress reporting.
+	 * OK, let's do it.  First let other backends know I'm in ANALYZE.
 	 */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	MyPgXact->vacuumFlags |= PROC_IN_ANALYZE;
+	LWLockRelease(ProcArrayLock);
 	pgstat_progress_start_command(PROGRESS_COMMAND_ANALYZE,
 								  RelationGetRelid(onerel));
 
@@ -278,6 +279,14 @@ analyze_rel(Oid relid, RangeVar *relation,
 	relation_close(onerel, NoLock);
 
 	pgstat_progress_end_command();
+
+	/*
+	 * Reset my PGXACT flag.  Note: we need this here, and not in vacuum_rel,
+	 * because the vacuum flag is cleared by the end-of-xact code.
+	 */
+	LWLockAcquire(ProcArrayLock, LW_EXCLUSIVE);
+	MyPgXact->vacuumFlags &= ~PROC_IN_ANALYZE;
+	LWLockRelease(ProcArrayLock);
 }
 
 /*
@@ -314,11 +323,6 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	Oid			save_userid;
 	int			save_sec_context;
 	int			save_nestlevel;
-	int64		AnalyzePageHit = VacuumPageHit;
-	int64		AnalyzePageMiss = VacuumPageMiss;
-	int64		AnalyzePageDirty = VacuumPageDirty;
-	PgStat_Counter startreadtime = 0;
-	PgStat_Counter startwritetime = 0;
 
 	if (inh)
 		ereport(elevel,
@@ -353,14 +357,8 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	/* measure elapsed time iff autovacuum logging requires it */
 	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
 	{
-		if (track_io_timing)
-		{
-			startreadtime = pgStatBlockReadTime;
-			startwritetime = pgStatBlockWriteTime;
-		}
-
 		pg_rusage_init(&ru0);
-		if (params->log_min_duration >= 0)
+		if (params->log_min_duration > 0)
 			starttime = GetCurrentTimestamp();
 	}
 
@@ -421,34 +419,20 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	/*
 	 * Open all indexes of the relation, and see if there are any analyzable
 	 * columns in the indexes.  We do not analyze index columns if there was
-	 * an explicit column list in the ANALYZE command, however.
-	 *
-	 * If we are doing a recursive scan, we don't want to touch the parent's
-	 * indexes at all.  If we're processing a partitioned table, we need to
-	 * know if there are any indexes, but we don't want to process them.
+	 * an explicit column list in the ANALYZE command, however.  If we are
+	 * doing a recursive scan, we don't want to touch the parent's indexes at
+	 * all.
 	 */
-	if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		List	   *idxs = RelationGetIndexList(onerel);
-
-		Irel = NULL;
-		nindexes = 0;
-		hasindex = idxs != NIL;
-		list_free(idxs);
-	}
-	else if (!inh)
-	{
+	if (!inh)
 		vac_open_indexes(onerel, AccessShareLock, &nindexes, &Irel);
-		hasindex = nindexes > 0;
-	}
 	else
 	{
 		Irel = NULL;
 		nindexes = 0;
-		hasindex = false;
 	}
+	hasindex = (nindexes > 0);
 	indexdata = NULL;
-	if (nindexes > 0)
+	if (hasindex)
 	{
 		indexdata = (AnlIndexData *) palloc0(nindexes * sizeof(AnlIndexData));
 		for (ind = 0; ind < nindexes; ind++)
@@ -549,6 +533,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	{
 		MemoryContext col_context,
 					old_context;
+		bool		build_ext_stats;
 
 		pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 									 PROGRESS_ANALYZE_PHASE_COMPUTE_STATS);
@@ -587,7 +572,7 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 			MemoryContextResetAndDeleteChildren(col_context);
 		}
 
-		if (nindexes > 0)
+		if (hasindex)
 			compute_index_stats(onerel, totalrows,
 								indexdata, nindexes,
 								rows, numrows,
@@ -612,24 +597,46 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 							thisdata->attr_cnt, thisdata->vacattrstats);
 		}
 
-		/* Build extended statistics (if there are any). */
-		BuildRelationExtStatistics(onerel, inh, totalrows, numrows, rows,
-								   attr_cnt, vacattrstats);
+		/*
+		 * Should we build extended statistics for this relation?
+		 *
+		 * The extended statistics catalog does not include an inheritance
+		 * flag, so we can't store statistics built both with and without
+		 * data from child relations. We can store just one set of statistics
+		 * per relation. For plain relations that's fine, but for inheritance
+		 * trees we have to pick whether to store statistics for just the
+		 * one relation or the whole tree. For plain inheritance we store
+		 * the (!inh) version, mostly for backwards compatibility reasons.
+		 * For partitioned tables that's pointless (the non-leaf tables are
+		 * always empty), so we store stats representing the whole tree.
+		 */
+		build_ext_stats = (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE) ? inh : (!inh);
+
+		/*
+		 * Build extended statistics (if there are any).
+		 *
+		 * For now we only build extended statistics on individual relations,
+		 * not for relations representing inheritance trees.
+		 */
+		if (build_ext_stats)
+			BuildRelationExtStatistics(onerel, totalrows, numrows, rows,
+									   attr_cnt, vacattrstats);
 	}
 
 	pgstat_progress_update_param(PROGRESS_ANALYZE_PHASE,
 								 PROGRESS_ANALYZE_PHASE_FINALIZE_ANALYZE);
 
 	/*
-	 * Update pages/tuples stats in pg_class ... but not if we're doing
-	 * inherited stats.
+	 * Update pages/tuples stats in pg_class, and report ANALYZE to the stats
+	 * collector ... but not if we're doing inherited stats.
 	 *
 	 * We assume that VACUUM hasn't set pg_class.reltuples already, even
 	 * during a VACUUM ANALYZE.  Although VACUUM often updates pg_class,
-	 * exceptions exist.  A "VACUUM (ANALYZE, INDEX_CLEANUP OFF)" command will
-	 * never update pg_class entries for index relations.  It's also possible
-	 * that an individual index's pg_class entry won't be updated during
-	 * VACUUM if the index AM returns NULL from its amvacuumcleanup() routine.
+	 * exceptions exists.  A "VACUUM (ANALYZE, INDEX_CLEANUP OFF)" command
+	 * will never update pg_class entries for index relations.  It's also
+	 * possible that an individual index's pg_class entry won't be updated
+	 * during VACUUM if the index AM returns NULL from its amvacuumcleanup()
+	 * routine.
 	 */
 	if (!inh)
 	{
@@ -645,7 +652,6 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 							hasindex,
 							InvalidTransactionId,
 							InvalidMultiXactId,
-							NULL, NULL,
 							in_outer_xact);
 
 		/* Same for indexes */
@@ -662,37 +668,22 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 								false,
 								InvalidTransactionId,
 								InvalidMultiXactId,
-								NULL, NULL,
 								in_outer_xact);
 		}
-	}
-	else if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-	{
-		/*
-		 * Partitioned tables don't have storage, so we don't set any fields
-		 * in their pg_class entries except for reltuples and relhasindex.
-		 */
-		vac_update_relstats(onerel, -1, totalrows,
-							0, hasindex, InvalidTransactionId,
-							InvalidMultiXactId,
-							NULL, NULL,
-							in_outer_xact);
-	}
 
-	/*
-	 * Now report ANALYZE to the cumulative stats system.  For regular tables,
-	 * we do it only if not doing inherited stats.  For partitioned tables, we
-	 * only do it for inherited stats. (We're never called for not-inherited
-	 * stats on partitioned tables anyway.)
-	 *
-	 * Reset the changes_since_analyze counter only if we analyzed all
-	 * columns; otherwise, there is still work for auto-analyze to do.
-	 */
-	if (!inh)
+		/*
+		 * Now report ANALYZE to the stats collector.
+		 *
+		 * We deliberately don't report to the stats collector when doing
+		 * inherited stats, because the stats collector only tracks per-table
+		 * stats.
+		 *
+		 * Reset the changes_since_analyze counter only if we analyzed all
+		 * columns; otherwise, there is still work for auto-analyze to do.
+		 */
 		pgstat_report_analyze(onerel, totalrows, totaldeadrows,
 							  (va_cols == NIL));
-	else if (onerel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		pgstat_report_analyze(onerel, 0, 0, (va_cols == NIL));
+	}
 
 	/*
 	 * If this isn't part of VACUUM ANALYZE, let index AMs do cleanup.
@@ -728,87 +719,15 @@ do_analyze_rel(Relation onerel, VacuumParams *params,
 	/* Log the action if appropriate */
 	if (IsAutoVacuumWorkerProcess() && params->log_min_duration >= 0)
 	{
-		TimestampTz endtime = GetCurrentTimestamp();
-
 		if (params->log_min_duration == 0 ||
-			TimestampDifferenceExceeds(starttime, endtime,
+			TimestampDifferenceExceeds(starttime, GetCurrentTimestamp(),
 									   params->log_min_duration))
-		{
-			long		delay_in_ms;
-			double		read_rate = 0;
-			double		write_rate = 0;
-			StringInfoData buf;
-
-			/*
-			 * Calculate the difference in the Page Hit/Miss/Dirty that
-			 * happened as part of the analyze by subtracting out the
-			 * pre-analyze values which we saved above.
-			 */
-			AnalyzePageHit = VacuumPageHit - AnalyzePageHit;
-			AnalyzePageMiss = VacuumPageMiss - AnalyzePageMiss;
-			AnalyzePageDirty = VacuumPageDirty - AnalyzePageDirty;
-
-			/*
-			 * We do not expect an analyze to take > 25 days and it simplifies
-			 * things a bit to use TimestampDifferenceMilliseconds.
-			 */
-			delay_in_ms = TimestampDifferenceMilliseconds(starttime, endtime);
-
-			/*
-			 * Note that we are reporting these read/write rates in the same
-			 * manner as VACUUM does, which means that while the 'average read
-			 * rate' here actually corresponds to page misses and resulting
-			 * reads which are also picked up by track_io_timing, if enabled,
-			 * the 'average write rate' is actually talking about the rate of
-			 * pages being dirtied, not being written out, so it's typical to
-			 * have a non-zero 'avg write rate' while I/O timings only reports
-			 * reads.
-			 *
-			 * It's not clear that an ANALYZE will ever result in
-			 * FlushBuffer() being called, but we track and support reporting
-			 * on I/O write time in case that changes as it's practically free
-			 * to do so anyway.
-			 */
-
-			if (delay_in_ms > 0)
-			{
-				read_rate = (double) BLCKSZ * AnalyzePageMiss / (1024 * 1024) /
-					(delay_in_ms / 1000.0);
-				write_rate = (double) BLCKSZ * AnalyzePageDirty / (1024 * 1024) /
-					(delay_in_ms / 1000.0);
-			}
-
-			/*
-			 * We split this up so we don't emit empty I/O timing values when
-			 * track_io_timing isn't enabled.
-			 */
-
-			initStringInfo(&buf);
-			appendStringInfo(&buf, _("automatic analyze of table \"%s.%s.%s\"\n"),
-							 get_database_name(MyDatabaseId),
-							 get_namespace_name(RelationGetNamespace(onerel)),
-							 RelationGetRelationName(onerel));
-			if (track_io_timing)
-			{
-				double		read_ms = (double) (pgStatBlockReadTime - startreadtime) / 1000;
-				double		write_ms = (double) (pgStatBlockWriteTime - startwritetime) / 1000;
-
-				appendStringInfo(&buf, _("I/O timings: read: %.3f ms, write: %.3f ms\n"),
-								 read_ms, write_ms);
-			}
-			appendStringInfo(&buf, _("avg read rate: %.3f MB/s, avg write rate: %.3f MB/s\n"),
-							 read_rate, write_rate);
-			appendStringInfo(&buf, _("buffer usage: %lld hits, %lld misses, %lld dirtied\n"),
-							 (long long) AnalyzePageHit,
-							 (long long) AnalyzePageMiss,
-							 (long long) AnalyzePageDirty);
-			appendStringInfo(&buf, _("system usage: %s"), pg_rusage_show(&ru0));
-
 			ereport(LOG,
-					(errmsg_internal("%s", buf.data)));
-
-			pfree(buf.data);
-		}
+					(errmsg("automatic analyze of table \"%s.%s.%s\" system usage: %s",
+							get_database_name(MyDatabaseId),
+							get_namespace_name(RelationGetNamespace(onerel)),
+							RelationGetRelationName(onerel),
+							pg_rusage_show(&ru0))));
 	}
 
 	/* Roll back any GUC changes executed by index functions */
@@ -1138,7 +1057,6 @@ acquire_sample_rows(Relation onerel, int elevel,
 	double		liverows = 0;	/* # live rows seen */
 	double		deadrows = 0;	/* # dead rows seen */
 	double		rowstoskip = -1;	/* -1 means not set yet */
-	uint32		randseed;		/* Seed for block sampler(s) */
 	BlockNumber totalblocks;
 	TransactionId OldestXmin;
 	BlockSamplerData bs;
@@ -1147,28 +1065,16 @@ acquire_sample_rows(Relation onerel, int elevel,
 	TableScanDesc scan;
 	BlockNumber nblocks;
 	BlockNumber blksdone = 0;
-#ifdef USE_PREFETCH
-	int			prefetch_maximum = 0;	/* blocks to prefetch if enabled */
-	BlockSamplerData prefetch_bs;
-#endif
 
 	Assert(targrows > 0);
 
 	totalblocks = RelationGetNumberOfBlocks(onerel);
 
 	/* Need a cutoff xmin for HeapTupleSatisfiesVacuum */
-	OldestXmin = GetOldestNonRemovableTransactionId(onerel);
+	OldestXmin = GetOldestXmin(onerel, PROCARRAY_FLAGS_VACUUM);
 
 	/* Prepare for sampling block numbers */
-	randseed = pg_prng_uint32(&pg_global_prng_state);
-	nblocks = BlockSampler_Init(&bs, totalblocks, targrows, randseed);
-
-#ifdef USE_PREFETCH
-	prefetch_maximum = get_tablespace_maintenance_io_concurrency(onerel->rd_rel->reltablespace);
-	/* Create another BlockSampler, using the same seed, for prefetching */
-	if (prefetch_maximum)
-		(void) BlockSampler_Init(&prefetch_bs, totalblocks, targrows, randseed);
-#endif
+	nblocks = BlockSampler_Init(&bs, totalblocks, targrows, random());
 
 	/* Report sampling block numbers */
 	pgstat_progress_update_param(PROGRESS_ANALYZE_BLOCKS_TOTAL,
@@ -1180,69 +1086,14 @@ acquire_sample_rows(Relation onerel, int elevel,
 	scan = table_beginscan_analyze(onerel);
 	slot = table_slot_create(onerel, NULL);
 
-#ifdef USE_PREFETCH
-
-	/*
-	 * If we are doing prefetching, then go ahead and tell the kernel about
-	 * the first set of pages we are going to want.  This also moves our
-	 * iterator out ahead of the main one being used, where we will keep it so
-	 * that we're always pre-fetching out prefetch_maximum number of blocks
-	 * ahead.
-	 */
-	if (prefetch_maximum)
-	{
-		for (int i = 0; i < prefetch_maximum; i++)
-		{
-			BlockNumber prefetch_block;
-
-			if (!BlockSampler_HasMore(&prefetch_bs))
-				break;
-
-			prefetch_block = BlockSampler_Next(&prefetch_bs);
-			PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, prefetch_block);
-		}
-	}
-#endif
-
 	/* Outer loop over blocks to sample */
 	while (BlockSampler_HasMore(&bs))
 	{
-		bool		block_accepted;
 		BlockNumber targblock = BlockSampler_Next(&bs);
-#ifdef USE_PREFETCH
-		BlockNumber prefetch_targblock = InvalidBlockNumber;
-
-		/*
-		 * Make sure that every time the main BlockSampler is moved forward
-		 * that our prefetch BlockSampler also gets moved forward, so that we
-		 * always stay out ahead.
-		 */
-		if (prefetch_maximum && BlockSampler_HasMore(&prefetch_bs))
-			prefetch_targblock = BlockSampler_Next(&prefetch_bs);
-#endif
 
 		vacuum_delay_point();
 
-		block_accepted = table_scan_analyze_next_block(scan, targblock, vac_strategy);
-
-#ifdef USE_PREFETCH
-
-		/*
-		 * When pre-fetching, after we get a block, tell the kernel about the
-		 * next one we will want, if there's any left.
-		 *
-		 * We want to do this even if the table_scan_analyze_next_block() call
-		 * above decides against analyzing the block it picked.
-		 */
-		if (prefetch_maximum && prefetch_targblock != InvalidBlockNumber)
-			PrefetchBuffer(scan->rs_rd, MAIN_FORKNUM, prefetch_targblock);
-#endif
-
-		/*
-		 * Don't analyze if table_scan_analyze_next_block() indicated this
-		 * block is unsuitable for analyzing.
-		 */
-		if (!block_accepted)
+		if (!table_scan_analyze_next_block(scan, targblock, vac_strategy))
 			continue;
 
 		while (table_scan_analyze_next_tuple(scan, OldestXmin, &liverows, &deadrows, slot))
@@ -1277,7 +1128,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 					 * Found a suitable tuple, so save it, replacing one old
 					 * tuple at random
 					 */
-					int			k = (int) (targrows * sampler_random_fract(&rstate.randstate));
+					int			k = (int) (targrows * sampler_random_fract(rstate.randstate));
 
 					Assert(k >= 0 && k < targrows);
 					heap_freetuple(rows[k]);
@@ -1306,8 +1157,7 @@ acquire_sample_rows(Relation onerel, int elevel,
 	 * tuples are already sorted.
 	 */
 	if (numrows == targrows)
-		qsort_interruptible((void *) rows, numrows, sizeof(HeapTuple),
-							compare_rows, NULL);
+		qsort((void *) rows, numrows, sizeof(HeapTuple), compare_rows);
 
 	/*
 	 * Estimate total numbers of live and dead rows in relation, extrapolating
@@ -1343,10 +1193,10 @@ acquire_sample_rows(Relation onerel, int elevel,
 }
 
 /*
- * Comparator for sorting rows[] array
+ * qsort comparator for sorting rows[] array
  */
 static int
-compare_rows(const void *a, const void *b, void *arg)
+compare_rows(const void *a, const void *b)
 {
 	HeapTuple	ha = *(const HeapTuple *) a;
 	HeapTuple	hb = *(const HeapTuple *) b;
@@ -1840,7 +1690,7 @@ static void compute_scalar_stats(VacAttrStatsP stats,
 								 int samplerows,
 								 double totalrows);
 static int	compare_scalars(const void *a, const void *b, void *arg);
-static int	compare_mcvs(const void *a, const void *b, void *arg);
+static int	compare_mcvs(const void *a, const void *b);
 static int	analyze_mcv_list(int *mcv_counts,
 							 int num_mcv,
 							 double stadistinct,
@@ -2477,8 +2327,8 @@ compute_scalar_stats(VacAttrStatsP stats,
 		/* Sort the collected values */
 		cxt.ssup = &ssup;
 		cxt.tupnoLink = tupnoLink;
-		qsort_interruptible((void *) values, values_cnt, sizeof(ScalarItem),
-							compare_scalars, (void *) &cxt);
+		qsort_arg((void *) values, values_cnt, sizeof(ScalarItem),
+				  compare_scalars, (void *) &cxt);
 
 		/*
 		 * Now scan the values in order, find the most common ones, and also
@@ -2722,8 +2572,8 @@ compute_scalar_stats(VacAttrStatsP stats,
 						deltafrac;
 
 			/* Sort the MCV items into position order to speed next loop */
-			qsort_interruptible((void *) track, num_mcv, sizeof(ScalarMCVItem),
-								compare_mcvs, NULL);
+			qsort((void *) track, num_mcv,
+				  sizeof(ScalarMCVItem), compare_mcvs);
 
 			/*
 			 * Collapse out the MCV items from the values[] array.
@@ -2886,7 +2736,7 @@ compute_scalar_stats(VacAttrStatsP stats,
 }
 
 /*
- * Comparator for sorting ScalarItems
+ * qsort_arg comparator for sorting ScalarItems
  *
  * Aside from sorting the items, we update the tupnoLink[] array
  * whenever two ScalarItems are found to contain equal datums.  The array
@@ -2923,10 +2773,10 @@ compare_scalars(const void *a, const void *b, void *arg)
 }
 
 /*
- * Comparator for sorting ScalarMCVItems by position
+ * qsort comparator for sorting ScalarMCVItems by position
  */
 static int
-compare_mcvs(const void *a, const void *b, void *arg)
+compare_mcvs(const void *a, const void *b)
 {
 	int			da = ((const ScalarMCVItem *) a)->first;
 	int			db = ((const ScalarMCVItem *) b)->first;

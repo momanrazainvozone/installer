@@ -1,6 +1,8 @@
 --
 -- PGP Public Key Encryption
 --
+-- ensure consistent test output regardless of the default bytea format
+SET bytea_output TO escape;
 
 -- successful encrypt/decrypt
 select pgp_pub_decrypt(
@@ -36,9 +38,9 @@ select pgp_pub_decrypt(
 from keytbl where keytbl.id=1;
 
 -- does text-to-bytea works
-select encode(pgp_pub_decrypt_bytea(
+select pgp_pub_decrypt_bytea(
 		pgp_pub_encrypt('Secret msg', dearmor(pubkey)),
-		dearmor(seckey)), 'escape')
+		dearmor(seckey))
 from keytbl where keytbl.id=1;
 
 -- and bytea-to-text?

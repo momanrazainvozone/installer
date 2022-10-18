@@ -3,7 +3,7 @@
  * pg_operator.c
  *	  routines to support manipulation of the pg_operator relation
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -245,7 +245,7 @@ OperatorShellMake(const char *operatorName,
 	values[Anum_pg_operator_oprname - 1] = NameGetDatum(&oname);
 	values[Anum_pg_operator_oprnamespace - 1] = ObjectIdGetDatum(operatorNamespace);
 	values[Anum_pg_operator_oprowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? 'b' : 'l');
+	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? (rightTypeId ? 'b' : 'r') : 'l');
 	values[Anum_pg_operator_oprcanmerge - 1] = BoolGetDatum(false);
 	values[Anum_pg_operator_oprcanhash - 1] = BoolGetDatum(false);
 	values[Anum_pg_operator_oprleft - 1] = ObjectIdGetDatum(leftTypeId);
@@ -494,7 +494,7 @@ OperatorCreate(const char *operatorName,
 	values[Anum_pg_operator_oprname - 1] = NameGetDatum(&oname);
 	values[Anum_pg_operator_oprnamespace - 1] = ObjectIdGetDatum(operatorNamespace);
 	values[Anum_pg_operator_oprowner - 1] = ObjectIdGetDatum(GetUserId());
-	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? 'b' : 'l');
+	values[Anum_pg_operator_oprkind - 1] = CharGetDatum(leftTypeId ? (rightTypeId ? 'b' : 'r') : 'l');
 	values[Anum_pg_operator_oprcanmerge - 1] = BoolGetDatum(canMerge);
 	values[Anum_pg_operator_oprcanhash - 1] = BoolGetDatum(canHash);
 	values[Anum_pg_operator_oprleft - 1] = ObjectIdGetDatum(leftTypeId);
@@ -781,9 +781,10 @@ makeOperatorDependencies(HeapTuple tuple,
 	Form_pg_operator oper = (Form_pg_operator) GETSTRUCT(tuple);
 	ObjectAddress myself,
 				referenced;
-	ObjectAddresses *addrs;
 
-	ObjectAddressSet(myself, OperatorRelationId, oper->oid);
+	myself.classId = OperatorRelationId;
+	myself.objectId = oper->oid;
+	myself.objectSubId = 0;
 
 	/*
 	 * If we are updating the operator, delete any existing entries, except
@@ -795,34 +796,40 @@ makeOperatorDependencies(HeapTuple tuple,
 		deleteSharedDependencyRecordsFor(myself.classId, myself.objectId, 0);
 	}
 
-	addrs = new_object_addresses();
-
 	/* Dependency on namespace */
 	if (OidIsValid(oper->oprnamespace))
 	{
-		ObjectAddressSet(referenced, NamespaceRelationId, oper->oprnamespace);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = NamespaceRelationId;
+		referenced.objectId = oper->oprnamespace;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* Dependency on left type */
 	if (OidIsValid(oper->oprleft))
 	{
-		ObjectAddressSet(referenced, TypeRelationId, oper->oprleft);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = TypeRelationId;
+		referenced.objectId = oper->oprleft;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* Dependency on right type */
 	if (OidIsValid(oper->oprright))
 	{
-		ObjectAddressSet(referenced, TypeRelationId, oper->oprright);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = TypeRelationId;
+		referenced.objectId = oper->oprright;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* Dependency on result type */
 	if (OidIsValid(oper->oprresult))
 	{
-		ObjectAddressSet(referenced, TypeRelationId, oper->oprresult);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = TypeRelationId;
+		referenced.objectId = oper->oprresult;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/*
@@ -837,26 +844,29 @@ makeOperatorDependencies(HeapTuple tuple,
 	/* Dependency on implementation function */
 	if (OidIsValid(oper->oprcode))
 	{
-		ObjectAddressSet(referenced, ProcedureRelationId, oper->oprcode);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = oper->oprcode;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* Dependency on restriction selectivity function */
 	if (OidIsValid(oper->oprrest))
 	{
-		ObjectAddressSet(referenced, ProcedureRelationId, oper->oprrest);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = oper->oprrest;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* Dependency on join selectivity function */
 	if (OidIsValid(oper->oprjoin))
 	{
-		ObjectAddressSet(referenced, ProcedureRelationId, oper->oprjoin);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = oper->oprjoin;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
-
-	record_object_address_dependencies(&myself, addrs, DEPENDENCY_NORMAL);
-	free_object_addresses(addrs);
 
 	/* Dependency on owner */
 	recordDependencyOnOwner(OperatorRelationId, oper->oid,

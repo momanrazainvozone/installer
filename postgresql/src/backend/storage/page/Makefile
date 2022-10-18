@@ -19,5 +19,5 @@ OBJS =  \
 
 include $(top_srcdir)/src/backend/common.mk
 
-# Provide special optimization flags for checksum.c
-checksum.o: CFLAGS += ${CFLAGS_UNROLL_LOOPS} ${CFLAGS_VECTORIZE}
+# important optimizations flags for checksum.c
+checksum.o: CFLAGS += ${CFLAGS_VECTOR}

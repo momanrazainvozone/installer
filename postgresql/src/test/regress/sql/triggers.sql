@@ -2,39 +2,6 @@
 -- TRIGGERS
 --
 
--- directory paths and dlsuffix are passed to us in environment variables
-\getenv libdir PG_LIBDIR
-\getenv dlsuffix PG_DLSUFFIX
-
-\set autoinclib :libdir '/autoinc' :dlsuffix
-\set refintlib :libdir '/refint' :dlsuffix
-\set regresslib :libdir '/regress' :dlsuffix
-
-CREATE FUNCTION autoinc ()
-	RETURNS trigger
-	AS :'autoinclib'
-	LANGUAGE C;
-
-CREATE FUNCTION check_primary_key ()
-	RETURNS trigger
-	AS :'refintlib'
-	LANGUAGE C;
-
-CREATE FUNCTION check_foreign_key ()
-	RETURNS trigger
-	AS :'refintlib'
-	LANGUAGE C;
-
-CREATE FUNCTION trigger_return_old ()
-        RETURNS trigger
-        AS :'regresslib'
-        LANGUAGE C;
-
-CREATE FUNCTION set_ttdummy (int4)
-        RETURNS int4
-        AS :'regresslib'
-        LANGUAGE C STRICT;
-
 create table pkeys (pkey1 int4 not null, pkey2 text not null);
 create table fkeys (fkey1 int4, fkey2 text, fkey3 int);
 create table fkeys2 (fkey21 int4, fkey22 text, pkey23 int not null);
@@ -486,7 +453,7 @@ create table trigtest2 (i int references trigtest(i) on delete cascade);
 
 create function trigtest() returns trigger as $$
 begin
-	raise notice '% % % %', TG_TABLE_NAME, TG_OP, TG_WHEN, TG_LEVEL;
+	raise notice '% % % %', TG_RELNAME, TG_OP, TG_WHEN, TG_LEVEL;
 	return new;
 end;$$ language plpgsql;
 
@@ -722,7 +689,7 @@ begin
         argstr := argstr || TG_argv[i];
     end loop;
 
-    raise notice '% % % % (%)', TG_TABLE_NAME, TG_WHEN, TG_OP, TG_LEVEL, argstr;
+    raise notice '% % % % (%)', TG_RELNAME, TG_WHEN, TG_OP, TG_LEVEL, argstr;
 
     if TG_LEVEL = 'ROW' then
         if TG_OP = 'INSERT' then
@@ -2217,7 +2184,7 @@ CCC	42
 \.
 
 -- same behavior for copy if there is an index (interesting because rows are
--- captured by a different code path in copyfrom.c if there are indexes)
+-- captured by a different code path in copy.c if there are indexes)
 create index on parent(b);
 copy parent (a, b) from stdin;
 DDD	42
@@ -2448,144 +2415,10 @@ delete from self_ref where a = 1;
 
 drop table self_ref;
 
---
--- test transition tables with MERGE
---
-create table merge_target_table (a int primary key, b text);
-create trigger merge_target_table_insert_trig
-  after insert on merge_target_table referencing new table as new_table
-  for each statement execute procedure dump_insert();
-create trigger merge_target_table_update_trig
-  after update on merge_target_table referencing old table as old_table new table as new_table
-  for each statement execute procedure dump_update();
-create trigger merge_target_table_delete_trig
-  after delete on merge_target_table referencing old table as old_table
-  for each statement execute procedure dump_delete();
-
-create table merge_source_table (a int, b text);
-insert into merge_source_table
-  values (1, 'initial1'), (2, 'initial2'),
-		 (3, 'initial3'), (4, 'initial4');
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when not matched then
-  insert values (a, b);
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when matched and s.a <= 2 then
-	update set b = t.b || ' updated by merge'
-when matched and s.a > 2 then
-	delete
-when not matched then
-  insert values (a, b);
-
-merge into merge_target_table t
-using merge_source_table s
-on t.a = s.a
-when matched and s.a <= 2 then
-	update set b = t.b || ' updated again by merge'
-when matched and s.a > 2 then
-	delete
-when not matched then
-  insert values (a, b);
-
-drop table merge_source_table, merge_target_table;
-
 -- cleanup
 drop function dump_insert();
 drop function dump_update();
 drop function dump_delete();
-
---
--- Tests for CREATE OR REPLACE TRIGGER
---
-create table my_table (id integer);
-
-create function funcA() returns trigger as $$
-begin
-  raise notice 'hello from funcA';
-  return null;
-end; $$ language plpgsql;
-
-create function funcB() returns trigger as $$
-begin
-  raise notice 'hello from funcB';
-  return null;
-end; $$ language plpgsql;
-
-create trigger my_trig
-  after insert on my_table
-  for each row execute procedure funcA();
-
-create trigger my_trig
-  before insert on my_table
-  for each row execute procedure funcB();  -- should fail
-
-insert into my_table values (1);
-
-create or replace trigger my_trig
-  before insert on my_table
-  for each row execute procedure funcB();  -- OK
-
-insert into my_table values (2);  -- this insert should become a no-op
-
-table my_table;
-
-drop table my_table;
-
--- test CREATE OR REPLACE TRIGGER on partition table
-create table parted_trig (a int) partition by range (a);
-create table parted_trig_1 partition of parted_trig
-       for values from (0) to (1000) partition by range (a);
-create table parted_trig_1_1 partition of parted_trig_1 for values from (0) to (100);
-create table parted_trig_2 partition of parted_trig for values from (1000) to (2000);
-create table default_parted_trig partition of parted_trig default;
-
--- test that trigger can be replaced by another one
--- at the same level of partition table
-create or replace trigger my_trig
-  after insert on parted_trig
-  for each row execute procedure funcA();
-insert into parted_trig (a) values (50);
-create or replace trigger my_trig
-  after insert on parted_trig
-  for each row execute procedure funcB();
-insert into parted_trig (a) values (50);
-
--- test that child trigger cannot be replaced directly
-create or replace trigger my_trig
-  after insert on parted_trig
-  for each row execute procedure funcA();
-insert into parted_trig (a) values (50);
-create or replace trigger my_trig
-  after insert on parted_trig_1
-  for each row execute procedure funcB();  -- should fail
-insert into parted_trig (a) values (50);
-drop trigger my_trig on parted_trig;
-insert into parted_trig (a) values (50);
-
--- test that user trigger can be overwritten by one defined at upper level
-create trigger my_trig
-  after insert on parted_trig_1
-  for each row execute procedure funcA();
-insert into parted_trig (a) values (50);
-create trigger my_trig
-  after insert on parted_trig
-  for each row execute procedure funcB();  -- should fail
-insert into parted_trig (a) values (50);
-create or replace trigger my_trig
-  after insert on parted_trig
-  for each row execute procedure funcB();
-insert into parted_trig (a) values (50);
-
--- cleanup
-drop table parted_trig;
-drop function funcA();
-drop function funcB();
 
 -- Leave around some objects for other tests
 create table trigger_parted (a int primary key) partition by list (a);
@@ -2615,7 +2448,7 @@ insert into convslot_test_child(col1) values ('1');
 insert into convslot_test_parent(col1) values ('3');
 insert into convslot_test_child(col1) values ('3');
 
-create function convslot_trig1()
+create or replace function trigger_function1()
 returns trigger
 language plpgsql
 AS $$
@@ -2626,7 +2459,7 @@ raise notice 'trigger = %, old_table = %',
 return null;
 end; $$;
 
-create function convslot_trig2()
+create or replace function trigger_function2()
 returns trigger
 language plpgsql
 AS $$
@@ -2639,11 +2472,11 @@ end; $$;
 
 create trigger but_trigger after update on convslot_test_child
 referencing new table as new_table
-for each statement execute function convslot_trig2();
+for each statement execute function trigger_function2();
 
 update convslot_test_parent set col1 = col1 || '1';
 
-create function convslot_trig3()
+create or replace function trigger_function3()
 returns trigger
 language plpgsql
 AS $$
@@ -2657,92 +2490,12 @@ end; $$;
 
 create trigger but_trigger2 after update on convslot_test_child
 referencing old table as old_table new table as new_table
-for each statement execute function convslot_trig3();
+for each statement execute function trigger_function3();
 update convslot_test_parent set col1 = col1 || '1';
 
 create trigger bdt_trigger after delete on convslot_test_child
 referencing old table as old_table
-for each statement execute function convslot_trig1();
+for each statement execute function trigger_function1();
 delete from convslot_test_parent;
 
 drop table convslot_test_child, convslot_test_parent;
-drop function convslot_trig1();
-drop function convslot_trig2();
-drop function convslot_trig3();
-
--- Bug #17607: variant of above in which trigger function raises an error;
--- we don't see any ill effects unless trigger tuple requires mapping
-
-create table convslot_test_parent (id int primary key, val int)
-partition by range (id);
-
-create table convslot_test_part (val int, id int not null);
-
-alter table convslot_test_parent
-  attach partition convslot_test_part for values from (1) to (1000);
-
-create function convslot_trig4() returns trigger as
-$$begin raise exception 'BOOM!'; end$$ language plpgsql;
-
-create trigger convslot_test_parent_update
-    after update on convslot_test_parent
-    referencing old table as old_rows new table as new_rows
-    for each statement execute procedure convslot_trig4();
-
-insert into convslot_test_parent (id, val) values (1, 2);
-
-begin;
-savepoint svp;
-update convslot_test_parent set val = 3;  -- error expected
-rollback to savepoint svp;
-rollback;
-
-drop table convslot_test_parent;
-drop function convslot_trig4();
-
--- Test trigger renaming on partitioned tables
-create table grandparent (id int, primary key (id)) partition by range (id);
-create table middle partition of grandparent for values from (1) to (10)
-partition by range (id);
-create table chi partition of middle for values from (1) to (5);
-create table cho partition of middle for values from (6) to (10);
-create function f () returns trigger as
-$$ begin return new; end; $$
-language plpgsql;
-create trigger a after insert on grandparent
-for each row execute procedure f();
-
-alter trigger a on grandparent rename to b;
-select tgrelid::regclass, tgname,
-(select tgname from pg_trigger tr where tr.oid = pg_trigger.tgparentid) parent_tgname
-from pg_trigger where tgrelid in (select relid from pg_partition_tree('grandparent'))
-order by tgname, tgrelid::regclass::text COLLATE "C";
-alter trigger a on only grandparent rename to b;	-- ONLY not supported
-alter trigger b on middle rename to c;	-- can't rename trigger on partition
-create trigger c after insert on middle
-for each row execute procedure f();
-alter trigger b on grandparent rename to c;
-
--- Rename cascading does not affect statement triggers
-create trigger p after insert on grandparent for each statement execute function f();
-create trigger p after insert on middle for each statement execute function f();
-alter trigger p on grandparent rename to q;
-select tgrelid::regclass, tgname,
-(select tgname from pg_trigger tr where tr.oid = pg_trigger.tgparentid) parent_tgname
-from pg_trigger where tgrelid in (select relid from pg_partition_tree('grandparent'))
-order by tgname, tgrelid::regclass::text COLLATE "C";
-
-drop table grandparent;
-
--- Trigger renaming does not recurse on legacy inheritance
-create table parent (a int);
-create table child () inherits (parent);
-create trigger parenttrig after insert on parent
-for each row execute procedure f();
-create trigger parenttrig after insert on child
-for each row execute procedure f();
-alter trigger parenttrig on parent rename to anothertrig;
-\d+ child
-
-drop table parent, child;
-drop function f();

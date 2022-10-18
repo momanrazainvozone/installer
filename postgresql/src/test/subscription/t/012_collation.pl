@@ -1,26 +1,27 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test collations, in particular nondeterministic ones
 # (only works with ICU)
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
+use PostgresNode;
+use TestLib;
 use Test::More;
 
-if ($ENV{with_icu} ne 'yes')
+if ($ENV{with_icu} eq 'yes')
+{
+	plan tests => 2;
+}
+else
 {
 	plan skip_all => 'ICU not supported by this build';
 }
 
-my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
+my $node_publisher = get_new_node('publisher');
 $node_publisher->init(
 	allows_streaming => 'logical',
 	extra            => [ '--locale=C', '--encoding=UTF8' ]);
 $node_publisher->start;
 
-my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
+my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init(
 	allows_streaming => 'logical',
 	extra            => [ '--locale=C', '--encoding=UTF8' ]);
@@ -104,5 +105,3 @@ $node_publisher->wait_for_catchup('sub1');
 is($node_subscriber->safe_psql('postgres', q{SELECT b FROM tab2}),
 	qq(bar),
 	'update with replica identity full with nondeterministic collation');
-
-done_testing();

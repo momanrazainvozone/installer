@@ -195,7 +195,7 @@ gbt_numeric_penalty(PG_FUNCTION_ARGS)
 	}
 	else
 	{
-		Numeric		nul = int64_to_numeric(0);
+		Numeric		nul = DatumGetNumeric(DirectFunctionCall1(int4_numeric, Int32GetDatum(0)));
 
 		*result = 0.0;
 

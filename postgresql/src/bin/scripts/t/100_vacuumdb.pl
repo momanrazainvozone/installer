@@ -1,18 +1,15 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 49;
 
 program_help_ok('vacuumdb');
 program_version_ok('vacuumdb');
 program_options_handling_ok('vacuumdb');
 
-my $node = PostgreSQL::Test::Cluster->new('main');
+my $node = get_new_node('main');
 $node->init;
 $node->start;
 
@@ -51,27 +48,6 @@ $node->issues_sql_like(
 $node->command_fails(
 	[ 'vacuumdb', '--analyze-only', '--disable-page-skipping', 'postgres' ],
 	'--analyze-only and --disable-page-skipping specified together');
-$node->issues_sql_like(
-	[ 'vacuumdb', '--no-index-cleanup', 'postgres' ],
-	qr/statement: VACUUM \(INDEX_CLEANUP FALSE\).*;/,
-	'vacuumdb --no-index-cleanup');
-$node->command_fails(
-	[ 'vacuumdb', '--analyze-only', '--no-index-cleanup', 'postgres' ],
-	'--analyze-only and --no-index-cleanup specified together');
-$node->issues_sql_like(
-	[ 'vacuumdb', '--no-truncate', 'postgres' ],
-	qr/statement: VACUUM \(TRUNCATE FALSE\).*;/,
-	'vacuumdb --no-truncate');
-$node->command_fails(
-	[ 'vacuumdb', '--analyze-only', '--no-truncate', 'postgres' ],
-	'--analyze-only and --no-truncate specified together');
-$node->issues_sql_like(
-	[ 'vacuumdb', '--no-process-toast', 'postgres' ],
-	qr/statement: VACUUM \(PROCESS_TOAST FALSE\).*;/,
-	'vacuumdb --no-process-toast');
-$node->command_fails(
-	[ 'vacuumdb', '--analyze-only', '--no-process-toast', 'postgres' ],
-	'--analyze-only and --no-process-toast specified together');
 $node->issues_sql_like(
 	[ 'vacuumdb', '-P', 2, 'postgres' ],
 	qr/statement: VACUUM \(PARALLEL 2\).*;/,
@@ -146,5 +122,3 @@ $node->issues_sql_like(
 	[ 'vacuumdb', '--min-xid-age', '2147483001', 'postgres' ],
 	qr/GREATEST.*relfrozenxid.*2147483001/,
 	'vacuumdb --table --min-xid-age');
-
-done_testing();

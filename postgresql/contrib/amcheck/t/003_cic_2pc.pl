@@ -1,28 +1,29 @@
 
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
+# Copyright (c) 2021, PostgreSQL Global Development Group
 
 # Test CREATE INDEX CONCURRENTLY with concurrent prepared-xact modifications
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
+use Config;
+use PostgresNode;
+use TestLib;
 
-use Test::More;
+use Test::More tests => 5;
 
 Test::More->builder->todo_start('filesystem bug')
-  if PostgreSQL::Test::Utils::has_wal_read_bug;
+  if TestLib::has_wal_read_bug;
 
 my ($node, $result);
 
 #
 # Test set-up
 #
-$node = PostgreSQL::Test::Cluster->new('CIC_2PC_test');
+$node = get_new_node('CIC_2PC_test');
 $node->init;
 $node->append_conf('postgresql.conf', 'max_prepared_transactions = 10');
 $node->append_conf('postgresql.conf',
-	'lock_timeout = ' . (1000 * $PostgreSQL::Test::Utils::timeout_default));
+	'lock_timeout = ' . (1000 * $TestLib::timeout_default));
 $node->start;
 $node->safe_psql('postgres', q(CREATE EXTENSION amcheck));
 $node->safe_psql('postgres', q(CREATE TABLE tbl(i int)));
@@ -38,7 +39,7 @@ $node->safe_psql('postgres', q(CREATE TABLE tbl(i int)));
 
 my $main_in    = '';
 my $main_out   = '';
-my $main_timer = IPC::Run::timeout($PostgreSQL::Test::Utils::timeout_default);
+my $main_timer = IPC::Run::timeout($TestLib::timeout_default);
 
 my $main_h =
   $node->background_psql('postgres', \$main_in, \$main_out,
@@ -52,7 +53,7 @@ pump $main_h until $main_out =~ /syncpoint1/ || $main_timer->is_expired;
 
 my $cic_in    = '';
 my $cic_out   = '';
-my $cic_timer = IPC::Run::timeout($PostgreSQL::Test::Utils::timeout_default);
+my $cic_timer = IPC::Run::timeout($TestLib::timeout_default);
 my $cic_h =
   $node->background_psql('postgres', \$cic_in, \$cic_out,
 	$cic_timer, on_error_stop => 1);
@@ -116,7 +117,7 @@ $node->restart;
 my $reindex_in  = '';
 my $reindex_out = '';
 my $reindex_timer =
-  IPC::Run::timeout($PostgreSQL::Test::Utils::timeout_default);
+  IPC::Run::timeout($TestLib::timeout_default);
 my $reindex_h =
   $node->background_psql('postgres', \$reindex_in, \$reindex_out,
 	$reindex_timer, on_error_stop => 1);

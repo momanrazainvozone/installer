@@ -31,20 +31,9 @@ ALTER TRIGGER <replaceable class="parameter">name</replaceable> ON <replaceable 
 
   <para>
    <command>ALTER TRIGGER</command> changes properties of an existing
-   trigger.
-  </para>
-
-  <para>
-   The <literal>RENAME</literal> clause changes the name of
+   trigger.  The <literal>RENAME</literal> clause changes the name of
    the given trigger without otherwise changing the trigger
-   definition.
-   If the table that the trigger is on is a partitioned table,
-   then corresponding clone triggers in the partitions are
-   renamed too.
-  </para>
-
-  <para>
-   The <literal>DEPENDS ON EXTENSION</literal> clause marks
+   definition.  The <literal>DEPENDS ON EXTENSION</literal> clause marks
    the trigger as dependent on an extension, such that if the extension is
    dropped, the trigger will automatically be dropped as well.
   </para>
@@ -104,7 +93,7 @@ ALTER TRIGGER <replaceable class="parameter">name</replaceable> ON <replaceable 
 
    <para>
     The ability to temporarily enable or disable a trigger is provided by
-    <link linkend="sql-altertable"><command>ALTER TABLE</command></link>, not by
+    <xref linkend="sql-altertable"/>, not by
     <command>ALTER TRIGGER</command>, because <command>ALTER TRIGGER</command> has no
     convenient way to express the option of enabling or disabling all of
     a table's triggers at once.

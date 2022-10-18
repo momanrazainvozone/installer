@@ -53,7 +53,7 @@
  * |	  |__|	|__||________________________||___________________|		   |
  * |_______________________________________________________________________|
  *
- * Copyright (c) 2019-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath.c
@@ -500,13 +500,9 @@ printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
 			escape_json(buf, jspGetString(v, NULL));
 			break;
 		case jpiNumeric:
-			if (jspHasNext(v))
-				appendStringInfoChar(buf, '(');
 			appendStringInfoString(buf,
 								   DatumGetCString(DirectFunctionCall1(numeric_out,
 																	   NumericGetDatum(jspGetNumeric(v)))));
-			if (jspHasNext(v))
-				appendStringInfoChar(buf, ')');
 			break;
 		case jpiBool:
 			if (jspGetBool(v))
@@ -664,7 +660,7 @@ printJsonPathItem(StringInfo buf, JsonPathItem *v, bool inKey,
 			else if (v->content.anybounds.first == v->content.anybounds.last)
 			{
 				if (v->content.anybounds.first == PG_UINT32_MAX)
-					appendStringInfoString(buf, "**{last}");
+					appendStringInfo(buf, "**{last}");
 				else
 					appendStringInfo(buf, "**{%u}",
 									 v->content.anybounds.first);

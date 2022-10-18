@@ -1,8 +1,3 @@
-# src/interfaces/libpq/test/Makefile
-
-PGFILEDESC = "libpq test program"
-PGAPPICON = win32
-
 subdir = src/interfaces/libpq/test
 top_builddir = ../../../..
 include $(top_builddir)/src/Makefile.global
@@ -14,11 +9,14 @@ endif
 override CPPFLAGS := -I$(libpq_srcdir) $(CPPFLAGS)
 LDFLAGS_INTERNAL += $(libpq_pgport)
 
-PROGS = libpq_testclient libpq_uri_regress
+PROGS = uri-regress
 
 all: $(PROGS)
 
-$(PROGS): $(WIN32RES)
+installcheck: all
+	SRCDIR='$(top_srcdir)' SUBDIR='$(subdir)' \
+		   $(PERL) $(top_srcdir)/$(subdir)/regress.pl
 
 clean distclean maintainer-clean:
 	rm -f $(PROGS) *.o
+	rm -f regress.out regress.diff

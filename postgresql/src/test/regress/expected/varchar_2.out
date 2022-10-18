@@ -1,11 +1,7 @@
 --
 -- VARCHAR
 --
---
--- Build a table for testing
--- (This temporarily hides the table created in test_setup.sql)
---
-CREATE TEMP TABLE VARCHAR_TBL(f1 varchar(1));
+CREATE TABLE VARCHAR_TBL(f1 varchar(1));
 INSERT INTO VARCHAR_TBL (f1) VALUES ('a');
 INSERT INTO VARCHAR_TBL (f1) VALUES ('A');
 -- any of the following three input formats are acceptable
@@ -18,96 +14,98 @@ INSERT INTO VARCHAR_TBL (f1) VALUES ('');
 INSERT INTO VARCHAR_TBL (f1) VALUES ('cd');
 ERROR:  value too long for type character varying(1)
 INSERT INTO VARCHAR_TBL (f1) VALUES ('c     ');
-SELECT * FROM VARCHAR_TBL;
- f1 
-----
- a
- A
- 1
- 2
- 3
- 
- c
+SELECT '' AS seven, * FROM VARCHAR_TBL;
+ seven | f1 
+-------+----
+       | a
+       | A
+       | 1
+       | 2
+       | 3
+       | 
+       | c
 (7 rows)
 
-SELECT c.*
+SELECT '' AS six, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 <> 'a';
- f1 
-----
- A
- 1
- 2
- 3
- 
- c
+ six | f1 
+-----+----
+     | A
+     | 1
+     | 2
+     | 3
+     | 
+     | c
 (6 rows)
 
-SELECT c.*
+SELECT '' AS one, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 = 'a';
- f1 
-----
- a
+ one | f1 
+-----+----
+     | a
 (1 row)
 
-SELECT c.*
+SELECT '' AS five, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 < 'a';
- f1 
-----
- 
+ five | f1 
+------+----
+      | 
 (1 row)
 
-SELECT c.*
+SELECT '' AS six, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 <= 'a';
- f1 
-----
- a
- 
+ six | f1 
+-----+----
+     | a
+     | 
 (2 rows)
 
-SELECT c.*
+SELECT '' AS one, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 > 'a';
- f1 
-----
- A
- 1
- 2
- 3
- c
+ one | f1 
+-----+----
+     | A
+     | 1
+     | 2
+     | 3
+     | c
 (5 rows)
 
-SELECT c.*
+SELECT '' AS two, c.*
    FROM VARCHAR_TBL c
    WHERE c.f1 >= 'a';
- f1 
-----
- a
- A
- 1
- 2
- 3
- c
+ two | f1 
+-----+----
+     | a
+     | A
+     | 1
+     | 2
+     | 3
+     | c
 (6 rows)
 
 DROP TABLE VARCHAR_TBL;
 --
 -- Now test longer arrays of char
 --
--- This varchar_tbl was already created and filled in test_setup.sql.
--- Here we just try to insert bad values.
---
+CREATE TABLE VARCHAR_TBL(f1 varchar(4));
+INSERT INTO VARCHAR_TBL (f1) VALUES ('a');
+INSERT INTO VARCHAR_TBL (f1) VALUES ('ab');
+INSERT INTO VARCHAR_TBL (f1) VALUES ('abcd');
 INSERT INTO VARCHAR_TBL (f1) VALUES ('abcde');
 ERROR:  value too long for type character varying(4)
-SELECT * FROM VARCHAR_TBL;
-  f1  
-------
- a
- ab
- abcd
- abcd
+INSERT INTO VARCHAR_TBL (f1) VALUES ('abcd    ');
+SELECT '' AS four, * FROM VARCHAR_TBL;
+ four |  f1  
+------+------
+      | a
+      | ab
+      | abcd
+      | abcd
 (4 rows)
 

@@ -3,7 +3,7 @@
  * lmgr.c
  *	  POSTGRES lock manager code
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,7 +23,6 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "storage/lmgr.h"
-#include "storage/proc.h"
 #include "storage/procarray.h"
 #include "storage/sinvaladt.h"
 #include "utils/inval.h"
@@ -173,34 +172,6 @@ ConditionalLockRelationOid(Oid relid, LOCKMODE lockmode)
 	}
 
 	return true;
-}
-
-/*
- *		LockRelationId
- *
- * Lock, given a LockRelId.  Same as LockRelationOid but take LockRelId as an
- * input.
- */
-void
-LockRelationId(LockRelId *relid, LOCKMODE lockmode)
-{
-	LOCKTAG		tag;
-	LOCALLOCK  *locallock;
-	LockAcquireResult res;
-
-	SET_LOCKTAG_RELATION(tag, relid->dbId, relid->relId);
-
-	res = LockAcquireExtended(&tag, lockmode, false, false, true, &locallock);
-
-	/*
-	 * Now that we have the lock, check for invalidation messages; see notes
-	 * in LockRelationOid.
-	 */
-	if (res != LOCKACQUIRE_ALREADY_CLEAR)
-	{
-		AcceptInvalidationMessages();
-		MarkLockClear(locallock);
-	}
 }
 
 /*

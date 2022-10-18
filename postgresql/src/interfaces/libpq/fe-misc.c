@@ -19,7 +19,7 @@
  * routines.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -68,6 +68,19 @@ PQlibVersion(void)
 	return PG_VERSION_NUM;
 }
 
+/*
+ * fputnbytes: print exactly N bytes to a file
+ *
+ * We avoid using %.*s here because it can misbehave if the data
+ * is not valid in what libc thinks is the prevailing encoding.
+ */
+static void
+fputnbytes(FILE *f, const char *str, size_t n)
+{
+	while (n-- > 0)
+		fputc(*str++, f);
+}
+
 
 /*
  * pqGetc: get 1 character from the connection
@@ -84,6 +97,9 @@ pqGetc(char *result, PGconn *conn)
 
 	*result = conn->inBuffer[conn->inCursor++];
 
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "From backend> %c\n", *result);
+
 	return 0;
 }
 
@@ -96,6 +112,9 @@ pqPutc(char c, PGconn *conn)
 {
 	if (pqPutMsgBytes(&c, 1, conn))
 		return EOF;
+
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "To backend> %c\n", c);
 
 	return 0;
 }
@@ -132,6 +151,10 @@ pqGets_internal(PQExpBuffer buf, PGconn *conn, bool resetbuffer)
 
 	conn->inCursor = ++inCursor;
 
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "From backend> \"%s\"\n",
+				buf->data);
+
 	return 0;
 }
 
@@ -157,6 +180,9 @@ pqPuts(const char *s, PGconn *conn)
 	if (pqPutMsgBytes(s, strlen(s) + 1, conn))
 		return EOF;
 
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "To backend> \"%s\"\n", s);
+
 	return 0;
 }
 
@@ -175,6 +201,13 @@ pqGetnchar(char *s, size_t len, PGconn *conn)
 
 	conn->inCursor += len;
 
+	if (conn->Pfdebug)
+	{
+		fprintf(conn->Pfdebug, "From backend (%lu)> ", (unsigned long) len);
+		fputnbytes(conn->Pfdebug, s, len);
+		fprintf(conn->Pfdebug, "\n");
+	}
+
 	return 0;
 }
 
@@ -192,6 +225,13 @@ pqSkipnchar(size_t len, PGconn *conn)
 	if (len > (size_t) (conn->inEnd - conn->inCursor))
 		return EOF;
 
+	if (conn->Pfdebug)
+	{
+		fprintf(conn->Pfdebug, "From backend (%lu)> ", (unsigned long) len);
+		fputnbytes(conn->Pfdebug, conn->inBuffer + conn->inCursor, len);
+		fprintf(conn->Pfdebug, "\n");
+	}
+
 	conn->inCursor += len;
 
 	return 0;
@@ -206,6 +246,13 @@ pqPutnchar(const char *s, size_t len, PGconn *conn)
 {
 	if (pqPutMsgBytes(s, len, conn))
 		return EOF;
+
+	if (conn->Pfdebug)
+	{
+		fprintf(conn->Pfdebug, "To backend> ");
+		fputnbytes(conn->Pfdebug, s, len);
+		fprintf(conn->Pfdebug, "\n");
+	}
 
 	return 0;
 }
@@ -244,6 +291,9 @@ pqGetInt(int *result, size_t bytes, PGconn *conn)
 			return EOF;
 	}
 
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "From backend (#%lu)> %d\n", (unsigned long) bytes, *result);
+
 	return 0;
 }
 
@@ -276,6 +326,9 @@ pqPutInt(int value, size_t bytes, PGconn *conn)
 							 (unsigned long) bytes);
 			return EOF;
 	}
+
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "To backend (%lu#)> %d\n", (unsigned long) bytes, value);
 
 	return 0;
 }
@@ -339,8 +392,8 @@ pqCheckOutBufferSpace(size_t bytes_needed, PGconn *conn)
 	}
 
 	/* realloc failed. Probably out of memory */
-	appendPQExpBufferStr(&conn->errorMessage,
-						 "cannot allocate memory for output buffer\n");
+	printfPQExpBuffer(&conn->errorMessage,
+					  "cannot allocate memory for output buffer\n");
 	return EOF;
 }
 
@@ -433,8 +486,8 @@ pqCheckInBufferSpace(size_t bytes_needed, PGconn *conn)
 	}
 
 	/* realloc failed. Probably out of memory */
-	appendPQExpBufferStr(&conn->errorMessage,
-						 "cannot allocate memory for input buffer\n");
+	printfPQExpBuffer(&conn->errorMessage,
+					  "cannot allocate memory for input buffer\n");
 	return EOF;
 }
 
@@ -443,6 +496,9 @@ pqCheckInBufferSpace(size_t bytes_needed, PGconn *conn)
  *
  * msg_type is the message type byte, or 0 for a message without type byte
  * (only startup messages have no type byte)
+ *
+ * force_len forces the message to have a length word; otherwise, we add
+ * a length word if protocol 3.
  *
  * Returns 0 on success, EOF on error
  *
@@ -454,11 +510,12 @@ pqCheckInBufferSpace(size_t bytes_needed, PGconn *conn)
  *
  * The state variable conn->outMsgStart points to the incomplete message's
  * length word: it is either outCount or outCount+1 depending on whether
- * there is a type byte.  The state variable conn->outMsgEnd is the end of
- * the data collected so far.
+ * there is a type byte.  If we are sending a message without length word
+ * (pre protocol 3.0 only), then outMsgStart is -1.  The state variable
+ * conn->outMsgEnd is the end of the data collected so far.
  */
 int
-pqPutMsgStart(char msg_type, PGconn *conn)
+pqPutMsgStart(char msg_type, bool force_len, PGconn *conn)
 {
 	int			lenPos;
 	int			endPos;
@@ -470,9 +527,14 @@ pqPutMsgStart(char msg_type, PGconn *conn)
 		endPos = conn->outCount;
 
 	/* do we want a length word? */
-	lenPos = endPos;
-	/* allow room for message length */
-	endPos += 4;
+	if (force_len || PG_PROTOCOL_MAJOR(conn->pversion) >= 3)
+	{
+		lenPos = endPos;
+		/* allow room for message length */
+		endPos += 4;
+	}
+	else
+		lenPos = -1;
 
 	/* make sure there is room for message header */
 	if (pqCheckOutBufferSpace(endPos, conn))
@@ -484,6 +546,10 @@ pqPutMsgStart(char msg_type, PGconn *conn)
 	conn->outMsgStart = lenPos;
 	conn->outMsgEnd = endPos;
 	/* length word, if needed, will be filled in by pqPutMsgEnd */
+
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "To backend> Msg %c\n",
+				msg_type ? msg_type : ' ');
 
 	return 0;
 }
@@ -519,6 +585,10 @@ pqPutMsgBytes(const void *buf, size_t len, PGconn *conn)
 int
 pqPutMsgEnd(PGconn *conn)
 {
+	if (conn->Pfdebug)
+		fprintf(conn->Pfdebug, "To backend> Msg complete, length %u\n",
+				conn->outMsgEnd - conn->outCount);
+
 	/* Fill in length word if needed */
 	if (conn->outMsgStart >= 0)
 	{
@@ -526,16 +596,6 @@ pqPutMsgEnd(PGconn *conn)
 
 		msgLen = pg_hton32(msgLen);
 		memcpy(conn->outBuffer + conn->outMsgStart, &msgLen, 4);
-	}
-
-	/* trace client-to-server message */
-	if (conn->Pfdebug)
-	{
-		if (conn->outCount < conn->outMsgStart)
-			pqTraceOutputMessage(conn, conn->outBuffer + conn->outCount, true);
-		else
-			pqTraceOutputNoTypeByteMessage(conn,
-										   conn->outBuffer + conn->outMsgStart);
 	}
 
 	/* Make message eligible to send */
@@ -572,8 +632,8 @@ pqReadData(PGconn *conn)
 
 	if (conn->sock == PGINVALID_SOCKET)
 	{
-		appendPQExpBufferStr(&conn->errorMessage,
-							 libpq_gettext("connection not open\n"));
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("connection not open\n"));
 		return -1;
 	}
 
@@ -621,29 +681,24 @@ retry3:
 						  conn->inBufSize - conn->inEnd);
 	if (nread < 0)
 	{
-		switch (SOCK_ERRNO)
-		{
-			case EINTR:
-				goto retry3;
-
-				/* Some systems return EAGAIN/EWOULDBLOCK for no data */
+		if (SOCK_ERRNO == EINTR)
+			goto retry3;
+		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
 #ifdef EAGAIN
-			case EAGAIN:
-				return someread;
+		if (SOCK_ERRNO == EAGAIN)
+			return someread;
 #endif
 #if defined(EWOULDBLOCK) && (!defined(EAGAIN) || (EWOULDBLOCK != EAGAIN))
-			case EWOULDBLOCK:
-				return someread;
+		if (SOCK_ERRNO == EWOULDBLOCK)
+			return someread;
 #endif
-
-				/* We might get ECONNRESET etc here if connection failed */
-			case ALL_CONNECTION_FAILURE_ERRNOS:
-				goto definitelyFailed;
-
-			default:
-				/* pqsecure_read set the error message for us */
-				return -1;
-		}
+		/* We might get ECONNRESET here if using TCP and backend died */
+#ifdef ECONNRESET
+		if (SOCK_ERRNO == ECONNRESET)
+			goto definitelyFailed;
+#endif
+		/* pqsecure_read set the error message for us */
+		return -1;
 	}
 	if (nread > 0)
 	{
@@ -716,29 +771,24 @@ retry4:
 						  conn->inBufSize - conn->inEnd);
 	if (nread < 0)
 	{
-		switch (SOCK_ERRNO)
-		{
-			case EINTR:
-				goto retry4;
-
-				/* Some systems return EAGAIN/EWOULDBLOCK for no data */
+		if (SOCK_ERRNO == EINTR)
+			goto retry4;
+		/* Some systems return EAGAIN/EWOULDBLOCK for no data */
 #ifdef EAGAIN
-			case EAGAIN:
-				return 0;
+		if (SOCK_ERRNO == EAGAIN)
+			return 0;
 #endif
 #if defined(EWOULDBLOCK) && (!defined(EAGAIN) || (EWOULDBLOCK != EAGAIN))
-			case EWOULDBLOCK:
-				return 0;
+		if (SOCK_ERRNO == EWOULDBLOCK)
+			return 0;
 #endif
-
-				/* We might get ECONNRESET etc here if connection failed */
-			case ALL_CONNECTION_FAILURE_ERRNOS:
-				goto definitelyFailed;
-
-			default:
-				/* pqsecure_read set the error message for us */
-				return -1;
-		}
+		/* We might get ECONNRESET here if using TCP and backend died */
+#ifdef ECONNRESET
+		if (SOCK_ERRNO == ECONNRESET)
+			goto definitelyFailed;
+#endif
+		/* pqsecure_read set the error message for us */
+		return -1;
 	}
 	if (nread > 0)
 	{
@@ -751,10 +801,10 @@ retry4:
 	 * means the connection has been closed.  Cope.
 	 */
 definitelyEOF:
-	appendPQExpBufferStr(&conn->errorMessage,
-						 libpq_gettext("server closed the connection unexpectedly\n"
-									   "\tThis probably means the server terminated abnormally\n"
-									   "\tbefore or while processing the request.\n"));
+	printfPQExpBuffer(&conn->errorMessage,
+					  libpq_gettext("server closed the connection unexpectedly\n"
+									"\tThis probably means the server terminated abnormally\n"
+									"\tbefore or while processing the request.\n"));
 
 	/* Come here if lower-level code already set a suitable errorMessage */
 definitelyFailed:
@@ -777,13 +827,12 @@ definitelyFailed:
  * (putting it in conn->inBuffer) in any situation where we can't send
  * all the specified data immediately.
  *
- * If a socket-level write failure occurs, conn->write_failed is set and the
- * error message is saved in conn->write_err_msg, but we clear the output
- * buffer and return zero anyway; this is because callers should soldier on
- * until we have read what we can from the server and checked for an error
- * message.  write_err_msg should be reported only when we are unable to
- * obtain a server error first.  Much of that behavior is implemented at
- * lower levels, but this function deals with some edge cases.
+ * Upon write failure, conn->write_failed is set and the error message is
+ * saved in conn->write_err_msg, but we clear the output buffer and return
+ * zero anyway; this is because callers should soldier on until it's possible
+ * to read from the server and check for an error message.  write_err_msg
+ * should be reported only when we are unable to obtain a server error first.
+ * (Thus, a -1 result is returned only for an internal *read* failure.)
  */
 static int
 pqSendSome(PGconn *conn, int len)
@@ -816,10 +865,13 @@ pqSendSome(PGconn *conn, int len)
 
 	if (conn->sock == PGINVALID_SOCKET)
 	{
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("connection not open\n"));
 		conn->write_failed = true;
-		/* Store error message in conn->write_err_msg, if possible */
+		/* Transfer error message to conn->write_err_msg, if possible */
 		/* (strdup failure is OK, we'll cope later) */
-		conn->write_err_msg = strdup(libpq_gettext("connection not open\n"));
+		conn->write_err_msg = strdup(conn->errorMessage.data);
+		resetPQExpBuffer(&conn->errorMessage);
 		/* Discard queued data; no chance it'll ever be sent */
 		conn->outCount = 0;
 		return 0;
@@ -859,6 +911,22 @@ pqSendSome(PGconn *conn, int len)
 					continue;
 
 				default:
+					/* pqsecure_write set the error message for us */
+					conn->write_failed = true;
+
+					/*
+					 * Transfer error message to conn->write_err_msg, if
+					 * possible (strdup failure is OK, we'll cope later).
+					 *
+					 * Note: this assumes that pqsecure_write and its children
+					 * will overwrite not append to conn->errorMessage.  If
+					 * that's ever changed, we could remember the length of
+					 * conn->errorMessage at entry to this routine, and then
+					 * save and delete just what was appended.
+					 */
+					conn->write_err_msg = strdup(conn->errorMessage.data);
+					resetPQExpBuffer(&conn->errorMessage);
+
 					/* Discard queued data; no chance it'll ever be sent */
 					conn->outCount = 0;
 
@@ -868,18 +936,7 @@ pqSendSome(PGconn *conn, int len)
 						if (pqReadData(conn) < 0)
 							return -1;
 					}
-
-					/*
-					 * Lower-level code should already have filled
-					 * conn->write_err_msg (and set conn->write_failed) or
-					 * conn->errorMessage.  In the former case, we pretend
-					 * there's no problem; the write_failed condition will be
-					 * dealt with later.  Otherwise, report the error now.
-					 */
-					if (conn->write_failed)
-						return 0;
-					else
-						return -1;
+					return 0;
 			}
 		}
 		else
@@ -957,13 +1014,11 @@ pqSendSome(PGconn *conn, int len)
 int
 pqFlush(PGconn *conn)
 {
-	if (conn->outCount > 0)
-	{
-		if (conn->Pfdebug)
-			fflush(conn->Pfdebug);
+	if (conn->Pfdebug)
+		fflush(conn->Pfdebug);
 
+	if (conn->outCount > 0)
 		return pqSendSome(conn, conn->outCount);
-	}
 
 	return 0;
 }
@@ -1004,8 +1059,8 @@ pqWaitTimed(int forRead, int forWrite, PGconn *conn, time_t finish_time)
 
 	if (result == 0)
 	{
-		appendPQExpBufferStr(&conn->errorMessage,
-							 libpq_gettext("timeout expired\n"));
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("timeout expired\n"));
 		return 1;
 	}
 
@@ -1049,8 +1104,8 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
 		return -1;
 	if (conn->sock == PGINVALID_SOCKET)
 	{
-		appendPQExpBufferStr(&conn->errorMessage,
-							 libpq_gettext("invalid socket\n"));
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("invalid socket\n"));
 		return -1;
 	}
 
@@ -1072,9 +1127,8 @@ pqSocketCheck(PGconn *conn, int forRead, int forWrite, time_t end_time)
 	{
 		char		sebuf[PG_STRERROR_R_BUFLEN];
 
-		appendPQExpBuffer(&conn->errorMessage,
-						  libpq_gettext("%s() failed: %s\n"),
-						  "select",
+		printfPQExpBuffer(&conn->errorMessage,
+						  libpq_gettext("select() failed: %s\n"),
 						  SOCK_STRERROR(SOCK_ERRNO, sebuf, sizeof(sebuf)));
 	}
 
@@ -1173,13 +1227,8 @@ pqSocketPoll(int sock, int forRead, int forWrite, time_t end_time)
  */
 
 /*
- * Returns the byte length of the character beginning at s, using the
+ * returns the byte length of the character beginning at s, using the
  * specified encoding.
- *
- * Caution: when dealing with text that is not certainly valid in the
- * specified encoding, the result may exceed the actual remaining
- * string length.  Callers that are not prepared to deal with that
- * should use PQmblenBounded() instead.
  */
 int
 PQmblen(const char *s, int encoding)
@@ -1188,17 +1237,7 @@ PQmblen(const char *s, int encoding)
 }
 
 /*
- * Returns the byte length of the character beginning at s, using the
- * specified encoding; but not more than the distance to end of string.
- */
-int
-PQmblenBounded(const char *s, int encoding)
-{
-	return strnlen(s, pg_encoding_mblen(encoding, s));
-}
-
-/*
- * Returns the display length of the character beginning at s, using the
+ * returns the display length of the character beginning at s, using the
  * specified encoding.
  */
 int

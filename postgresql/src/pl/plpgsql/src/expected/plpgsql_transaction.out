@@ -594,7 +594,7 @@ END;
 $$;
 ERROR:  SET TRANSACTION ISOLATION LEVEL must be called before any query
 CONTEXT:  SQL statement "SET TRANSACTION ISOLATION LEVEL REPEATABLE READ"
-PL/pgSQL function inline_code_block line 3 at SQL statement
+PL/pgSQL function inline_code_block line 3 at SET
 DO LANGUAGE plpgsql $$
 BEGIN
     SAVEPOINT foo;

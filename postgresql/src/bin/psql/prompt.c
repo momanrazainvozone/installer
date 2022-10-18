@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/prompt.c
  */
@@ -15,7 +15,6 @@
 #include "common.h"
 #include "common/string.h"
 #include "input.h"
-#include "libpq/pqcomm.h"
 #include "prompt.h"
 #include "settings.h"
 
@@ -137,7 +136,7 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 						const char *host = PQhost(pset.db);
 
 						/* INET socket */
-						if (host && host[0] && !is_unixsock_path(host))
+						if (host && host[0] && !is_absolute_path(host))
 						{
 							strlcpy(buf, host, sizeof(buf));
 							if (*p == 'm')
@@ -316,6 +315,7 @@ get_prompt(promptStatus_t status, ConditionalStack cstack)
 					buf[0] = *p;
 					buf[1] = '\0';
 					break;
+
 			}
 			esc = false;
 		}

@@ -40,7 +40,7 @@
  * doesn't really save much executor work anyway.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -431,7 +431,7 @@ process_subquery_nestloop_params(PlannerInfo *root, List *subplan_params)
 
 	foreach(lc, subplan_params)
 	{
-		PlannerParamItem *pitem = lfirst_node(PlannerParamItem, lc);
+		PlannerParamItem *pitem = castNode(PlannerParamItem, lfirst(lc));
 
 		if (IsA(pitem->item, Var))
 		{

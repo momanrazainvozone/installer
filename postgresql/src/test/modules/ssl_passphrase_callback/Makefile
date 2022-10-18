@@ -1,6 +1,6 @@
 # ssl_passphrase_callback Makefile
 
-export with_ssl
+export with_openssl
 
 MODULE_big = ssl_passphrase_func
 OBJS = ssl_passphrase_func.o $(WIN32RES)

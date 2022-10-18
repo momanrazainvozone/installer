@@ -3,7 +3,7 @@
  * alter.c
  *	  Drivers for generic alter commands
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -501,7 +501,7 @@ ExecAlterObjectSchemaStmt(AlterObjectSchemaStmt *stmt,
 	switch (stmt->objectType)
 	{
 		case OBJECT_EXTENSION:
-			address = AlterExtensionNamespace(strVal(stmt->object), stmt->newschema,
+			address = AlterExtensionNamespace(strVal((Value *) stmt->object), stmt->newschema,
 											  oldSchemaAddr ? &oldNspOid : NULL);
 			break;
 
@@ -658,10 +658,8 @@ AlterObjectNamespace_oid(Oid classId, Oid objid, Oid nspOid,
 		case OCLASS_DEFACL:
 		case OCLASS_EXTENSION:
 		case OCLASS_EVENT_TRIGGER:
-		case OCLASS_PARAMETER_ACL:
 		case OCLASS_POLICY:
 		case OCLASS_PUBLICATION:
-		case OCLASS_PUBLICATION_NAMESPACE:
 		case OCLASS_PUBLICATION_REL:
 		case OCLASS_SUBSCRIPTION:
 		case OCLASS_TRANSFORM:
@@ -839,10 +837,10 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 	switch (stmt->objectType)
 	{
 		case OBJECT_DATABASE:
-			return AlterDatabaseOwner(strVal(stmt->object), newowner);
+			return AlterDatabaseOwner(strVal((Value *) stmt->object), newowner);
 
 		case OBJECT_SCHEMA:
-			return AlterSchemaOwner(strVal(stmt->object), newowner);
+			return AlterSchemaOwner(strVal((Value *) stmt->object), newowner);
 
 		case OBJECT_TYPE:
 		case OBJECT_DOMAIN:		/* same as TYPE */
@@ -850,23 +848,23 @@ ExecAlterOwnerStmt(AlterOwnerStmt *stmt)
 			break;
 
 		case OBJECT_FDW:
-			return AlterForeignDataWrapperOwner(strVal(stmt->object),
+			return AlterForeignDataWrapperOwner(strVal((Value *) stmt->object),
 												newowner);
 
 		case OBJECT_FOREIGN_SERVER:
-			return AlterForeignServerOwner(strVal(stmt->object),
+			return AlterForeignServerOwner(strVal((Value *) stmt->object),
 										   newowner);
 
 		case OBJECT_EVENT_TRIGGER:
-			return AlterEventTriggerOwner(strVal(stmt->object),
+			return AlterEventTriggerOwner(strVal((Value *) stmt->object),
 										  newowner);
 
 		case OBJECT_PUBLICATION:
-			return AlterPublicationOwner(strVal(stmt->object),
+			return AlterPublicationOwner(strVal((Value *) stmt->object),
 										 newowner);
 
 		case OBJECT_SUBSCRIPTION:
-			return AlterSubscriptionOwner(strVal(stmt->object),
+			return AlterSubscriptionOwner(strVal((Value *) stmt->object),
 										  newowner);
 
 			/* Generic cases */

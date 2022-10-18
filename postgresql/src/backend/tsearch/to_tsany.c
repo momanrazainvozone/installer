@@ -3,7 +3,7 @@
  * to_tsany.c
  *		to_ts* function definitions
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -20,20 +20,10 @@
 #include "utils/jsonfuncs.h"
 
 
-/*
- * Opaque data structure, which is passed by parse_tsquery() to pushval_morph().
- */
 typedef struct MorphOpaque
 {
 	Oid			cfg_id;
-
-	/*
-	 * Single tsquery morph could be parsed into multiple words.  When these
-	 * words reside in adjacent positions, they are connected using this
-	 * operator.  Usually, that is OP_PHRASE, which requires word positions of
-	 * a complex morph to exactly match the tsvector.
-	 */
-	int			qoperator;
+	int			qoperator;		/* query operator */
 } MorphOpaque;
 
 typedef struct TSVectorBuildState
@@ -569,6 +559,7 @@ pushval_morph(Datum opaque, TSQueryParserState state, char *strval, int lenval, 
 		}
 
 		pfree(prs.words);
+
 	}
 	else
 		pushStop(state);
@@ -582,14 +573,7 @@ to_tsquery_byid(PG_FUNCTION_ARGS)
 	MorphOpaque data;
 
 	data.cfg_id = PG_GETARG_OID(0);
-
-	/*
-	 * Passing OP_PHRASE as a qoperator makes tsquery require matching of word
-	 * positions of a complex morph exactly match the tsvector.  Also, when
-	 * the complex morphs are connected with OP_PHRASE operator, we connect
-	 * all their words into the OP_PHRASE sequence.
-	 */
-	data.qoperator = OP_PHRASE;
+	data.qoperator = OP_AND;
 
 	query = parse_tsquery(text_to_cstring(in),
 						  pushval_morph,
@@ -619,12 +603,6 @@ plainto_tsquery_byid(PG_FUNCTION_ARGS)
 	MorphOpaque data;
 
 	data.cfg_id = PG_GETARG_OID(0);
-
-	/*
-	 * parse_tsquery() with P_TSQ_PLAIN flag takes the whole input text as a
-	 * single morph.  Passing OP_PHRASE as a qoperator makes tsquery require
-	 * matching of all words independently on their positions.
-	 */
 	data.qoperator = OP_AND;
 
 	query = parse_tsquery(text_to_cstring(in),
@@ -656,12 +634,6 @@ phraseto_tsquery_byid(PG_FUNCTION_ARGS)
 	MorphOpaque data;
 
 	data.cfg_id = PG_GETARG_OID(0);
-
-	/*
-	 * parse_tsquery() with P_TSQ_PLAIN flag takes the whole input text as a
-	 * single morph.  Passing OP_PHRASE as a qoperator makes tsquery require
-	 * matching of word positions.
-	 */
 	data.qoperator = OP_PHRASE;
 
 	query = parse_tsquery(text_to_cstring(in),
@@ -693,13 +665,7 @@ websearch_to_tsquery_byid(PG_FUNCTION_ARGS)
 
 	data.cfg_id = PG_GETARG_OID(0);
 
-	/*
-	 * Passing OP_PHRASE as a qoperator makes tsquery require matching of word
-	 * positions of a complex morph exactly match the tsvector.  Also, when
-	 * the complex morphs are given in quotes, we connect all their words into
-	 * the OP_PHRASE sequence.
-	 */
-	data.qoperator = OP_PHRASE;
+	data.qoperator = OP_AND;
 
 	query = parse_tsquery(text_to_cstring(in),
 						  pushval_morph,
@@ -719,4 +685,5 @@ websearch_to_tsquery(PG_FUNCTION_ARGS)
 	PG_RETURN_DATUM(DirectFunctionCall2(websearch_to_tsquery_byid,
 										ObjectIdGetDatum(cfgId),
 										PointerGetDatum(in)));
+
 }

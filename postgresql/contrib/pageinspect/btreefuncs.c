@@ -41,10 +41,8 @@
 #include "utils/varlena.h"
 
 PG_FUNCTION_INFO_V1(bt_metap);
-PG_FUNCTION_INFO_V1(bt_page_items_1_9);
 PG_FUNCTION_INFO_V1(bt_page_items);
 PG_FUNCTION_INFO_V1(bt_page_items_bytea);
-PG_FUNCTION_INFO_V1(bt_page_stats_1_9);
 PG_FUNCTION_INFO_V1(bt_page_stats);
 
 #define IS_INDEX(r) ((r)->rd_rel->relkind == RELKIND_INDEX)
@@ -75,7 +73,11 @@ typedef struct BTPageStat
 	/* opaque data */
 	BlockNumber btpo_prev;
 	BlockNumber btpo_next;
-	uint32		btpo_level;
+	union
+	{
+		uint32		level;
+		TransactionId xact;
+	}			btpo;
 	uint16		btpo_flags;
 	BTCycleId	btpo_cycleid;
 } BTPageStat;
@@ -93,7 +95,7 @@ GetBTPageStatistics(BlockNumber blkno, Buffer buffer, BTPageStat *stat)
 	Page		page = BufferGetPage(buffer);
 	PageHeader	phdr = (PageHeader) page;
 	OffsetNumber maxoff = PageGetMaxOffsetNumber(page);
-	BTPageOpaque opaque = BTPageGetOpaque(page);
+	BTPageOpaque opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	int			item_size = 0;
 	int			off;
 
@@ -108,33 +110,9 @@ GetBTPageStatistics(BlockNumber blkno, Buffer buffer, BTPageStat *stat)
 	/* page type (flags) */
 	if (P_ISDELETED(opaque))
 	{
-		/* We divide deleted pages into leaf ('d') or internal ('D') */
-		if (P_ISLEAF(opaque) || !P_HAS_FULLXID(opaque))
-			stat->type = 'd';
-		else
-			stat->type = 'D';
-
-		/*
-		 * Report safexid in a deleted page.
-		 *
-		 * Handle pg_upgrade'd deleted pages that used the previous safexid
-		 * representation in btpo_level field (this used to be a union type
-		 * called "bpto").
-		 */
-		if (P_HAS_FULLXID(opaque))
-		{
-			FullTransactionId safexid = BTPageGetDeleteXid(page);
-
-			elog(DEBUG2, "deleted page from block %u has safexid %u:%u",
-				 blkno, EpochFromFullTransactionId(safexid),
-				 XidFromFullTransactionId(safexid));
-		}
-		else
-			elog(DEBUG2, "deleted page from block %u has safexid %u",
-				 blkno, opaque->btpo_level);
-
-		/* Don't interpret BTDeletedPageData as index tuples */
-		maxoff = InvalidOffsetNumber;
+		stat->type = 'd';
+		stat->btpo.xact = opaque->btpo.xact;
+		return;
 	}
 	else if (P_IGNORE(opaque))
 		stat->type = 'e';
@@ -148,7 +126,7 @@ GetBTPageStatistics(BlockNumber blkno, Buffer buffer, BTPageStat *stat)
 	/* btpage opaque data */
 	stat->btpo_prev = opaque->btpo_prev;
 	stat->btpo_next = opaque->btpo_next;
-	stat->btpo_level = opaque->btpo_level;
+	stat->btpo.level = opaque->btpo.level;
 	stat->btpo_flags = opaque->btpo_flags;
 	stat->btpo_cycleid = opaque->btpo_cycleid;
 
@@ -182,11 +160,11 @@ GetBTPageStatistics(BlockNumber blkno, Buffer buffer, BTPageStat *stat)
  * Usage: SELECT * FROM bt_page_stats('t1_pkey', 1);
  * -----------------------------------------------
  */
-static Datum
-bt_page_stats_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
+Datum
+bt_page_stats(PG_FUNCTION_ARGS)
 {
 	text	   *relname = PG_GETARG_TEXT_PP(0);
-	int64		blkno = (ext_version == PAGEINSPECT_V1_8 ? PG_GETARG_UINT32(1) : PG_GETARG_INT64(1));
+	uint32		blkno = PG_GETARG_UINT32(1);
 	Buffer		buffer;
 	Relation	rel;
 	RangeVar   *relrv;
@@ -221,15 +199,8 @@ bt_page_stats_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot access temporary tables of other sessions")));
 
-	if (blkno < 0 || blkno > MaxBlockNumber)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("invalid block number")));
-
 	if (blkno == 0)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("block 0 is a meta page")));
+		elog(ERROR, "block 0 is a meta page");
 
 	CHECK_RELATION_BLOCK_RANGE(rel, blkno);
 
@@ -250,16 +221,16 @@ bt_page_stats_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 		elog(ERROR, "return type must be a row type");
 
 	j = 0;
-	values[j++] = psprintf("%u", stat.blkno);
+	values[j++] = psprintf("%d", stat.blkno);
 	values[j++] = psprintf("%c", stat.type);
-	values[j++] = psprintf("%u", stat.live_items);
-	values[j++] = psprintf("%u", stat.dead_items);
-	values[j++] = psprintf("%u", stat.avg_item_size);
-	values[j++] = psprintf("%u", stat.page_size);
-	values[j++] = psprintf("%u", stat.free_size);
-	values[j++] = psprintf("%u", stat.btpo_prev);
-	values[j++] = psprintf("%u", stat.btpo_next);
-	values[j++] = psprintf("%u", stat.btpo_level);
+	values[j++] = psprintf("%d", stat.live_items);
+	values[j++] = psprintf("%d", stat.dead_items);
+	values[j++] = psprintf("%d", stat.avg_item_size);
+	values[j++] = psprintf("%d", stat.page_size);
+	values[j++] = psprintf("%d", stat.free_size);
+	values[j++] = psprintf("%d", stat.btpo_prev);
+	values[j++] = psprintf("%d", stat.btpo_next);
+	values[j++] = psprintf("%d", (stat.type == 'd') ? stat.btpo.xact : stat.btpo.level);
 	values[j++] = psprintf("%d", stat.btpo_flags);
 
 	tuple = BuildTupleFromCStrings(TupleDescGetAttInMetadata(tupleDesc),
@@ -268,19 +239,6 @@ bt_page_stats_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 	result = HeapTupleGetDatum(tuple);
 
 	PG_RETURN_DATUM(result);
-}
-
-Datum
-bt_page_stats_1_9(PG_FUNCTION_ARGS)
-{
-	return bt_page_stats_internal(fcinfo, PAGEINSPECT_V1_9);
-}
-
-/* entry point for old extension version */
-Datum
-bt_page_stats(PG_FUNCTION_ARGS)
-{
-	return bt_page_stats_internal(fcinfo, PAGEINSPECT_V1_8);
 }
 
 
@@ -303,7 +261,7 @@ struct user_args
  * ------------------------------------------------------
  */
 static Datum
-bt_page_print_tuples(struct user_args *uargs)
+bt_page_print_tuples(FuncCallContext *fctx, struct user_args *uargs)
 {
 	Page		page = uargs->page;
 	OffsetNumber offset = uargs->offset;
@@ -449,11 +407,11 @@ bt_page_print_tuples(struct user_args *uargs)
  * Usage: SELECT * FROM bt_page_items('t1_pkey', 1);
  *-------------------------------------------------------
  */
-static Datum
-bt_page_items_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
+Datum
+bt_page_items(PG_FUNCTION_ARGS)
 {
 	text	   *relname = PG_GETARG_TEXT_PP(0);
-	int64		blkno = (ext_version == PAGEINSPECT_V1_8 ? PG_GETARG_UINT32(1) : PG_GETARG_INT64(1));
+	uint32		blkno = PG_GETARG_UINT32(1);
 	Datum		result;
 	FuncCallContext *fctx;
 	MemoryContext mctx;
@@ -493,15 +451,8 @@ bt_page_items_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("cannot access temporary tables of other sessions")));
 
-		if (blkno < 0 || blkno > MaxBlockNumber)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("invalid block number")));
-
 		if (blkno == 0)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("block 0 is a meta page")));
+			elog(ERROR, "block 0 is a meta page");
 
 		CHECK_RELATION_BLOCK_RANGE(rel, blkno);
 
@@ -525,16 +476,12 @@ bt_page_items_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 
 		uargs->offset = FirstOffsetNumber;
 
-		opaque = BTPageGetOpaque(uargs->page);
+		opaque = (BTPageOpaque) PageGetSpecialPointer(uargs->page);
 
-		if (!P_ISDELETED(opaque))
-			fctx->max_calls = PageGetMaxOffsetNumber(uargs->page);
-		else
-		{
-			/* Don't interpret BTDeletedPageData as index tuples */
-			elog(NOTICE, "page from block " INT64_FORMAT " is deleted", blkno);
-			fctx->max_calls = 0;
-		}
+		if (P_ISDELETED(opaque))
+			elog(NOTICE, "page is deleted");
+
+		fctx->max_calls = PageGetMaxOffsetNumber(uargs->page);
 		uargs->leafpage = P_ISLEAF(opaque);
 		uargs->rightmost = P_RIGHTMOST(opaque);
 
@@ -555,25 +502,12 @@ bt_page_items_internal(PG_FUNCTION_ARGS, enum pageinspect_version ext_version)
 
 	if (fctx->call_cntr < fctx->max_calls)
 	{
-		result = bt_page_print_tuples(uargs);
+		result = bt_page_print_tuples(fctx, uargs);
 		uargs->offset++;
 		SRF_RETURN_NEXT(fctx, result);
 	}
 
 	SRF_RETURN_DONE(fctx);
-}
-
-Datum
-bt_page_items_1_9(PG_FUNCTION_ARGS)
-{
-	return bt_page_items_internal(fcinfo, PAGEINSPECT_V1_9);
-}
-
-/* entry point for old extension version */
-Datum
-bt_page_items(PG_FUNCTION_ARGS)
-{
-	return bt_page_items_internal(fcinfo, PAGEINSPECT_V1_8);
 }
 
 /*-------------------------------------------------------
@@ -628,14 +562,14 @@ bt_page_items_bytea(PG_FUNCTION_ARGS)
 							   (int) MAXALIGN(sizeof(BTPageOpaqueData)),
 							   (int) PageGetSpecialSize(uargs->page))));
 
-		opaque = BTPageGetOpaque(uargs->page);
+		opaque = (BTPageOpaque) PageGetSpecialPointer(uargs->page);
 
 		if (P_ISMETA(opaque))
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("block is a meta page")));
 
-		if (P_ISLEAF(opaque) && opaque->btpo_level != 0)
+		if (P_ISLEAF(opaque) && opaque->btpo.level != 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 					 errmsg("block is not a valid btree leaf page")));
@@ -643,14 +577,7 @@ bt_page_items_bytea(PG_FUNCTION_ARGS)
 		if (P_ISDELETED(opaque))
 			elog(NOTICE, "page is deleted");
 
-		if (!P_ISDELETED(opaque))
-			fctx->max_calls = PageGetMaxOffsetNumber(uargs->page);
-		else
-		{
-			/* Don't interpret BTDeletedPageData as index tuples */
-			elog(NOTICE, "page from block is deleted");
-			fctx->max_calls = 0;
-		}
+		fctx->max_calls = PageGetMaxOffsetNumber(uargs->page);
 		uargs->leafpage = P_ISLEAF(opaque);
 		uargs->rightmost = P_RIGHTMOST(opaque);
 
@@ -671,7 +598,7 @@ bt_page_items_bytea(PG_FUNCTION_ARGS)
 
 	if (fctx->call_cntr < fctx->max_calls)
 	{
-		result = bt_page_print_tuples(uargs);
+		result = bt_page_print_tuples(fctx, uargs);
 		uargs->offset++;
 		SRF_RETURN_NEXT(fctx, result);
 	}
@@ -741,7 +668,10 @@ bt_metap(PG_FUNCTION_ARGS)
 
 	/*
 	 * We need a kluge here to detect API versions prior to 1.8.  Earlier
-	 * versions incorrectly used int4 for certain columns.
+	 * versions incorrectly used int4 for certain columns.  This caused
+	 * various problems.  For example, an int4 version of the "oldest_xact"
+	 * column would not work with TransactionId values that happened to exceed
+	 * PG_INT32_MAX.
 	 *
 	 * There is no way to reliably avoid the problems created by the old
 	 * function definition at this point, so insist that the user update the
@@ -769,8 +699,7 @@ bt_metap(PG_FUNCTION_ARGS)
 	 */
 	if (metad->btm_version >= BTREE_NOVAC_VERSION)
 	{
-		values[j++] = psprintf(INT64_FORMAT,
-							   (int64) metad->btm_last_cleanup_num_delpages);
+		values[j++] = psprintf("%u", metad->btm_oldest_btpo_xact);
 		values[j++] = psprintf("%f", metad->btm_last_cleanup_num_heap_tuples);
 		values[j++] = metad->btm_allequalimage ? "t" : "f";
 	}

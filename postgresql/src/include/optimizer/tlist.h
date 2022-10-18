@@ -4,7 +4,7 @@
  *	  prototypes for tlist.c.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/optimizer/tlist.h
@@ -18,6 +18,7 @@
 
 
 extern TargetEntry *tlist_member(Expr *node, List *targetlist);
+extern TargetEntry *tlist_member_ignore_relabel(Expr *node, List *targetlist);
 
 extern List *add_to_flat_tlist(List *tlist, List *exprs);
 

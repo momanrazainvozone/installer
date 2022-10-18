@@ -3,7 +3,7 @@
  * partition.c
  *		  Partitioning related data structures and functions.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,8 +32,7 @@
 #include "utils/rel.h"
 #include "utils/syscache.h"
 
-static Oid	get_partition_parent_worker(Relation inhRel, Oid relid,
-										bool *detach_pending);
+static Oid	get_partition_parent_worker(Relation inhRel, Oid relid);
 static void get_partition_ancestors_worker(Relation inhRel, Oid relid,
 										   List **ancestors);
 
@@ -43,31 +42,22 @@ static void get_partition_ancestors_worker(Relation inhRel, Oid relid,
  *
  * Returns inheritance parent of a partition by scanning pg_inherits
  *
- * If the partition is in the process of being detached, an error is thrown,
- * unless even_if_detached is passed as true.
- *
  * Note: Because this function assumes that the relation whose OID is passed
  * as an argument will have precisely one parent, it should only be called
  * when it is known that the relation is a partition.
  */
 Oid
-get_partition_parent(Oid relid, bool even_if_detached)
+get_partition_parent(Oid relid)
 {
 	Relation	catalogRelation;
 	Oid			result;
-	bool		detach_pending;
 
 	catalogRelation = table_open(InheritsRelationId, AccessShareLock);
 
-	result = get_partition_parent_worker(catalogRelation, relid,
-										 &detach_pending);
+	result = get_partition_parent_worker(catalogRelation, relid);
 
 	if (!OidIsValid(result))
 		elog(ERROR, "could not find tuple for parent of relation %u", relid);
-
-	if (detach_pending && !even_if_detached)
-		elog(ERROR, "relation %u has no parent because it's being detached",
-			 relid);
 
 	table_close(catalogRelation, AccessShareLock);
 
@@ -78,19 +68,14 @@ get_partition_parent(Oid relid, bool even_if_detached)
  * get_partition_parent_worker
  *		Scan the pg_inherits relation to return the OID of the parent of the
  *		given relation
- *
- * If the partition is being detached, *detach_pending is set true (but the
- * original parent is still returned.)
  */
 static Oid
-get_partition_parent_worker(Relation inhRel, Oid relid, bool *detach_pending)
+get_partition_parent_worker(Relation inhRel, Oid relid)
 {
 	SysScanDesc scan;
 	ScanKeyData key[2];
 	Oid			result = InvalidOid;
 	HeapTuple	tuple;
-
-	*detach_pending = false;
 
 	ScanKeyInit(&key[0],
 				Anum_pg_inherits_inhrelid,
@@ -108,9 +93,6 @@ get_partition_parent_worker(Relation inhRel, Oid relid, bool *detach_pending)
 	{
 		Form_pg_inherits form = (Form_pg_inherits) GETSTRUCT(tuple);
 
-		/* Let caller know of partition being detached */
-		if (form->inhdetachpending)
-			*detach_pending = true;
 		result = form->inhparent;
 	}
 
@@ -152,14 +134,10 @@ static void
 get_partition_ancestors_worker(Relation inhRel, Oid relid, List **ancestors)
 {
 	Oid			parentOid;
-	bool		detach_pending;
 
-	/*
-	 * Recursion ends at the topmost level, ie., when there's no parent; also
-	 * when the partition is being detached.
-	 */
-	parentOid = get_partition_parent_worker(inhRel, relid, &detach_pending);
-	if (parentOid == InvalidOid || detach_pending)
+	/* Recursion ends at the topmost level, ie., when there's no parent */
+	parentOid = get_partition_parent_worker(inhRel, relid);
+	if (parentOid == InvalidOid)
 		return;
 
 	*ancestors = lappend_oid(*ancestors, parentOid);
@@ -192,7 +170,7 @@ index_get_partition(Relation partition, Oid indexId)
 		ReleaseSysCache(tup);
 		if (!ispartition)
 			continue;
-		if (get_partition_parent(partIdx, false) == indexId)
+		if (get_partition_parent(partIdx) == indexId)
 		{
 			list_free(idxlist);
 			return partIdx;

@@ -3,7 +3,7 @@
  * view.c
  *	  use rewrite rules to construct views
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -296,12 +296,7 @@ checkViewTupleDesc(TupleDesc newdesc, TupleDesc olddesc)
 							NameStr(oldattr->attname),
 							NameStr(newattr->attname)),
 					 errhint("Use ALTER VIEW ... RENAME COLUMN ... to change name of view column instead.")));
-
-		/*
-		 * We cannot allow type, typmod, or collation to change, since these
-		 * properties may be embedded in Vars of other views/rules referencing
-		 * this one.  Other column attributes can be ignored.
-		 */
+		/* XXX would it be safe to allow atttypmod to change?  Not sure */
 		if (newattr->atttypid != oldattr->atttypid ||
 			newattr->atttypmod != oldattr->atttypmod)
 			ereport(ERROR,
@@ -312,18 +307,7 @@ checkViewTupleDesc(TupleDesc newdesc, TupleDesc olddesc)
 													 oldattr->atttypmod),
 							format_type_with_typemod(newattr->atttypid,
 													 newattr->atttypmod))));
-
-		/*
-		 * At this point, attcollations should be both valid or both invalid,
-		 * so applying get_collation_name unconditionally should be fine.
-		 */
-		if (newattr->attcollation != oldattr->attcollation)
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_TABLE_DEFINITION),
-					 errmsg("cannot change collation of view column \"%s\" from \"%s\" to \"%s\"",
-							NameStr(oldattr->attname),
-							get_collation_name(oldattr->attcollation),
-							get_collation_name(newattr->attcollation))));
+		/* We can ignore the remaining attributes of an attribute... */
 	}
 
 	/*
@@ -447,13 +431,16 @@ DefineView(ViewStmt *stmt, const char *queryString,
 	/*
 	 * Run parse analysis to convert the raw parse tree to a Query.  Note this
 	 * also acquires sufficient locks on the source table(s).
+	 *
+	 * Since parse analysis scribbles on its input, copy the raw parse tree;
+	 * this ensures we don't corrupt a prepared statement, for example.
 	 */
 	rawstmt = makeNode(RawStmt);
-	rawstmt->stmt = stmt->query;
+	rawstmt->stmt = (Node *) copyObject(stmt->query);
 	rawstmt->stmt_location = stmt_location;
 	rawstmt->stmt_len = stmt_len;
 
-	viewParse = parse_analyze_fixedparams(rawstmt, queryString, NULL, 0, NULL);
+	viewParse = parse_analyze(rawstmt, queryString, NULL, 0, NULL);
 
 	/*
 	 * The grammar should ensure that the result is a single SELECT Query.

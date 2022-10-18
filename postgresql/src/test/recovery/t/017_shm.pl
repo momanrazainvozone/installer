@@ -1,16 +1,14 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 #
 # Tests of pg_shmem.h functions
 #
 use strict;
 use warnings;
+use Config;
 use File::stat qw(stat);
 use IPC::Run 'run';
-use PostgreSQL::Test::Cluster;
+use PostgresNode;
 use Test::More;
-use PostgreSQL::Test::Utils;
+use TestLib;
 use Time::HiRes qw(usleep);
 
 # If we don't have shmem support, skip the whole thing
@@ -24,8 +22,12 @@ if ($@ || $windows_os)
 {
 	plan skip_all => 'SysV shared memory not supported by this platform';
 }
+else
+{
+	plan tests => 4;
+}
 
-my $tempdir = PostgreSQL::Test::Utils::tempdir;
+my $tempdir = TestLib::tempdir;
 
 # Log "ipcs" diffs on a best-effort basis, swallowing any error.
 my $ipcs_before = "$tempdir/ipcs_before";
@@ -38,7 +40,7 @@ sub log_ipcs
 }
 
 # Node setup.
-my $gnat = PostgreSQL::Test::Cluster->new('gnat');
+my $gnat = PostgresNode->get_new_node('gnat');
 $gnat->init;
 
 # Create a shmem segment that will conflict with gnat's first choice
@@ -131,7 +133,7 @@ my $slow_client = IPC::Run::start(
 	\$stdout,
 	'2>',
 	\$stderr,
-	IPC::Run::timeout(5 * $PostgreSQL::Test::Utils::timeout_default));
+	IPC::Run::timeout(5 * $TestLib::timeout_default));
 ok( $gnat->poll_query_until(
 		'postgres',
 		"SELECT 1 FROM pg_stat_activity WHERE query = '$slow_query'", '1'),
@@ -143,10 +145,10 @@ unlink($gnat->data_dir . '/postmaster.pid');
 $gnat->rotate_logfile;    # on Windows, can't open old log for writing
 log_ipcs();
 # Reject ordinary startup.  Retry for the same reasons poll_start() does,
-# every 0.1s for at least $PostgreSQL::Test::Utils::timeout_default seconds.
+# every 0.1s for at least $TestLib::timeout_default seconds.
 my $pre_existing_msg = qr/pre-existing shared memory block/;
 {
-	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
+	my $max_attempts = 10 * $TestLib::timeout_default;
 	my $attempts     = 0;
 	while ($attempts < $max_attempts)
 	{
@@ -171,7 +173,7 @@ like($single_stderr, $pre_existing_msg,
 log_ipcs();
 
 # cleanup slow backend
-PostgreSQL::Test::Utils::system_log('pg_ctl', 'kill', 'QUIT', $slow_pid);
+TestLib::system_log('pg_ctl', 'kill', 'QUIT', $slow_pid);
 $slow_client->finish;    # client has detected backend termination
 log_ipcs();
 
@@ -193,7 +195,7 @@ sub poll_start
 {
 	my ($node) = @_;
 
-	my $max_attempts = 10 * $PostgreSQL::Test::Utils::timeout_default;
+	my $max_attempts = 10 * $TestLib::timeout_default;
 	my $attempts     = 0;
 
 	while ($attempts < $max_attempts)
@@ -214,5 +216,3 @@ sub poll_start
 	$node->start && return 1;
 	return 0;
 }
-
-done_testing();

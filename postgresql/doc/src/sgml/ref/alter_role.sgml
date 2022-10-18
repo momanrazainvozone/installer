@@ -46,7 +46,6 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
 <phrase>where <replaceable class="parameter">role_specification</replaceable> can be:</phrase>
 
     <replaceable class="parameter">role_name</replaceable>
-  | CURRENT_ROLE
   | CURRENT_USER
   | SESSION_USER
 </synopsis>
@@ -63,11 +62,11 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
   <para>
    The first variant of this command listed in the synopsis can change
    many of the role attributes that can be specified in
-   <link linkend="sql-createrole"><command>CREATE ROLE</command></link>.
+   <xref linkend="sql-createrole"/>.
    (All the possible attributes are covered,
    except that there are no options for adding or removing memberships; use
-   <link linkend="sql-grant"><command>GRANT</command></link> and
-   <link linkend="sql-revoke"><command>REVOKE</command></link> for that.)
+   <xref linkend="sql-grant"/> and
+   <xref linkend="sql-revoke"/> for that.)
    Attributes not mentioned in the command retain their previous settings.
    Database superusers can change any of these settings for any role.
    Roles having <literal>CREATEROLE</literal> privilege can change any of these
@@ -105,8 +104,8 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
    default, overriding whatever setting is present in
    <filename>postgresql.conf</filename> or has been received from the <command>postgres</command>
    command line. This only happens at login time; executing
-   <link linkend="sql-set-role"><command>SET ROLE</command></link> or
-   <link linkend="sql-set-session-authorization"><command>SET SESSION AUTHORIZATION</command></link> does not cause new
+   <xref linkend="sql-set-role"/> or
+   <xref linkend="sql-set-session-authorization"/> does not cause new
    configuration values to be set.
    Settings set for all databases are overridden by database-specific settings
    attached to a role.  Settings for specific databases or specific roles override
@@ -137,7 +136,6 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
      </varlistentry>
 
      <varlistentry>
-      <term><literal>CURRENT_ROLE</literal></term>
       <term><literal>CURRENT_USER</literal></term>
       <listitem>
        <para>
@@ -178,7 +176,7 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
       <listitem>
        <para>
         These clauses alter attributes originally set by
-        <link linkend="sql-createrole"><command>CREATE ROLE</command></link>. For more information, see the
+        <xref linkend="sql-createrole"/>. For more information, see the
         <command>CREATE ROLE</command> reference page.
        </para>
       </listitem>
@@ -222,8 +220,8 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
 
        <para>
         Role-specific variable settings take effect only at login;
-        <link linkend="sql-set-role"><command>SET ROLE</command></link> and
-        <link linkend="sql-set-session-authorization"><command>SET SESSION AUTHORIZATION</command></link>
+        <xref linkend="sql-set-role"/> and
+        <xref linkend="sql-set-session-authorization"/>
         do not process role-specific variable settings.
        </para>
 
@@ -241,14 +239,14 @@ ALTER ROLE { <replaceable class="parameter">role_specification</replaceable> | A
   <title>Notes</title>
 
   <para>
-   Use <link linkend="sql-createrole"><command>CREATE ROLE</command></link>
-   to add new roles, and <link linkend="sql-droprole"><command>DROP ROLE</command></link> to remove a role.
+   Use <xref linkend="sql-createrole"/>
+   to add new roles, and <xref linkend="sql-droprole"/> to remove a role.
   </para>
 
   <para>
    <command>ALTER ROLE</command> cannot change a role's memberships.
-   Use <link linkend="sql-grant"><command>GRANT</command></link> and
-   <link linkend="sql-revoke"><command>REVOKE</command></link>
+   Use <xref linkend="sql-grant"/> and
+   <xref linkend="sql-revoke"/>
    to do that.
   </para>
 

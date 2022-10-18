@@ -50,28 +50,8 @@ BEGIN \;
 SELECT 2.0 AS "float" \;
 SELECT 'world' AS "text" \;
 COMMIT;
- float 
--------
-   2.0
-(1 row)
-
- text  
--------
- world
-(1 row)
-
 -- compound with empty statements and spurious leading spacing
 \;\;   SELECT 3 + 3 \;\;\;   SELECT ' ' || ' !' \;\;   SELECT 1 + 4 \;;
- ?column? 
-----------
-        6
-(1 row)
-
- ?column? 
-----------
-   !
-(1 row)
-
  ?column? 
 ----------
         5
@@ -81,11 +61,6 @@ COMMIT;
 SELECT 1 + 1 + 1 AS "add" \gset
 SELECT :add + 1 + 1 AS "add" \;
 SELECT :add + 1 + 1 AS "add" \gset
- add 
------
-   5
-(1 row)
-
 -- set operator
 SELECT 1 AS i UNION SELECT 2 ORDER BY i;
  i 
@@ -126,7 +101,7 @@ SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
 ------------------------------------------------------------------------------+-------+------
  PREPARE pgss_test (int) AS SELECT $1, $2 LIMIT $3                            |     1 |    1
  SELECT $1                                                                   +|     4 |    4
-   -- multiline                                                              +|       | 
+                                                                             +|       | 
    AS "text"                                                                  |       | 
  SELECT $1 + $2                                                               |     2 |    2
  SELECT $1 + $2 + $3 AS "add"                                                 |     3 |    3
@@ -222,51 +197,12 @@ SELECT * FROM test WHERE a IN (1, 2, 3, 4, 5);
  3 | c                   
 (8 rows)
 
--- MERGE
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN MATCHED THEN UPDATE SET b = st.b || st.a::text;
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN MATCHED THEN UPDATE SET b = test.b || st.a::text;
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN MATCHED AND length(st.b) > 1 THEN UPDATE SET b = test.b || st.a::text;
-MERGE INTO test USING test st ON (st.a = test.a)
- WHEN NOT MATCHED THEN INSERT (a, b) VALUES (0, NULL);
-MERGE INTO test USING test st ON (st.a = test.a)
- WHEN NOT MATCHED THEN INSERT VALUES (0, NULL);	-- same as above
-MERGE INTO test USING test st ON (st.a = test.a)
- WHEN NOT MATCHED THEN INSERT (b, a) VALUES (NULL, 0);
-MERGE INTO test USING test st ON (st.a = test.a)
- WHEN NOT MATCHED THEN INSERT (a) VALUES (0);
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN MATCHED THEN DELETE;
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN MATCHED THEN DO NOTHING;
-MERGE INTO test USING test st ON (st.a = test.a AND st.a >= 4)
- WHEN NOT MATCHED THEN DO NOTHING;
 SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
                                     query                                     | calls | rows 
 ------------------------------------------------------------------------------+-------+------
  DELETE FROM test WHERE a > $1                                                |     1 |    1
  INSERT INTO test (a, b) VALUES ($1, $2), ($3, $4), ($5, $6)                  |     1 |    3
  INSERT INTO test VALUES(generate_series($1, $2), $3)                         |     1 |   10
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    6
-  WHEN MATCHED AND length(st.b) > $2 THEN UPDATE SET b = test.b || st.a::text |       | 
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    6
-  WHEN MATCHED THEN DELETE                                                    |       | 
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    0
-  WHEN MATCHED THEN DO NOTHING                                                |       | 
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    6
-  WHEN MATCHED THEN UPDATE SET b = st.b || st.a::text                         |       | 
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    6
-  WHEN MATCHED THEN UPDATE SET b = test.b || st.a::text                       |       | 
- MERGE INTO test USING test st ON (st.a = test.a AND st.a >= $1)             +|     1 |    0
-  WHEN NOT MATCHED THEN DO NOTHING                                            |       | 
- MERGE INTO test USING test st ON (st.a = test.a)                            +|     1 |    0
-  WHEN NOT MATCHED THEN INSERT (a) VALUES ($1)                                |       | 
- MERGE INTO test USING test st ON (st.a = test.a)                            +|     2 |    0
-  WHEN NOT MATCHED THEN INSERT (a, b) VALUES ($1, $2)                         |       | 
- MERGE INTO test USING test st ON (st.a = test.a)                            +|     1 |    0
-  WHEN NOT MATCHED THEN INSERT (b, a) VALUES ($1, $2)                         |       | 
  SELECT * FROM test ORDER BY a                                                |     1 |   12
  SELECT * FROM test WHERE a > $1 ORDER BY a                                   |     2 |    4
  SELECT * FROM test WHERE a IN ($1, $2, $3, $4, $5)                           |     1 |    8
@@ -274,7 +210,7 @@ SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
  SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C" |     0 |    0
  UPDATE test SET b = $1 WHERE a = $2                                          |     6 |    6
  UPDATE test SET b = $1 WHERE a > $2                                          |     1 |    3
-(19 rows)
+(10 rows)
 
 --
 -- INSERT, UPDATE, DELETE on test table to validate WAL generation metrics
@@ -593,71 +529,6 @@ SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
 (9 rows)
 
 --
--- Track the total number of rows retrieved or affected by the utility
--- commands of COPY, FETCH, CREATE TABLE AS, CREATE MATERIALIZED VIEW,
--- REFRESH MATERIALIZED VIEW and SELECT INTO
---
-SELECT pg_stat_statements_reset();
- pg_stat_statements_reset 
---------------------------
- 
-(1 row)
-
-CREATE TABLE pgss_ctas AS SELECT a, 'ctas' b FROM generate_series(1, 10) a;
-SELECT generate_series(1, 10) c INTO pgss_select_into;
-COPY pgss_ctas (a, b) FROM STDIN;
-CREATE MATERIALIZED VIEW pgss_matv AS SELECT * FROM pgss_ctas;
-REFRESH MATERIALIZED VIEW pgss_matv;
-BEGIN;
-DECLARE pgss_cursor CURSOR FOR SELECT * FROM pgss_matv;
-FETCH NEXT pgss_cursor;
- a |  b   
----+------
- 1 | ctas
-(1 row)
-
-FETCH FORWARD 5 pgss_cursor;
- a |  b   
----+------
- 2 | ctas
- 3 | ctas
- 4 | ctas
- 5 | ctas
- 6 | ctas
-(5 rows)
-
-FETCH FORWARD ALL pgss_cursor;
- a  |  b   
-----+------
-  7 | ctas
-  8 | ctas
-  9 | ctas
- 10 | ctas
- 11 | copy
- 12 | copy
- 13 | copy
-(7 rows)
-
-COMMIT;
-SELECT query, plans, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
-                                        query                                        | plans | calls | rows 
--------------------------------------------------------------------------------------+-------+-------+------
- BEGIN                                                                               |     0 |     1 |    0
- COMMIT                                                                              |     0 |     1 |    0
- COPY pgss_ctas (a, b) FROM STDIN                                                    |     0 |     1 |    3
- CREATE MATERIALIZED VIEW pgss_matv AS SELECT * FROM pgss_ctas                       |     0 |     1 |   13
- CREATE TABLE pgss_ctas AS SELECT a, 'ctas' b FROM generate_series(1, 10) a          |     0 |     1 |   10
- DECLARE pgss_cursor CURSOR FOR SELECT * FROM pgss_matv                              |     0 |     1 |    0
- FETCH FORWARD 5 pgss_cursor                                                         |     0 |     1 |    5
- FETCH FORWARD ALL pgss_cursor                                                       |     0 |     1 |    7
- FETCH NEXT pgss_cursor                                                              |     0 |     1 |    1
- REFRESH MATERIALIZED VIEW pgss_matv                                                 |     0 |     1 |   13
- SELECT generate_series(1, 10) c INTO pgss_select_into                               |     0 |     1 |   10
- SELECT pg_stat_statements_reset()                                                   |     0 |     1 |    1
- SELECT query, plans, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C" |     1 |     0 |    0
-(13 rows)
-
---
 -- Track user activity and reset them
 --
 SELECT pg_stat_statements_reset();
@@ -857,9 +728,6 @@ SELECT query, calls, rows FROM pg_stat_statements ORDER BY query COLLATE "C";
 --
 DROP ROLE regress_stats_user1;
 DROP ROLE regress_stats_user2;
-DROP MATERIALIZED VIEW pgss_matv;
-DROP TABLE pgss_ctas;
-DROP TABLE pgss_select_into;
 --
 -- [re]plan counting
 --
@@ -933,212 +801,6 @@ SELECT query, plans >= 2 AND plans <= calls AS plans_ok, calls, rows FROM pg_sta
                    query                    | plans_ok | calls | rows 
 --------------------------------------------+----------+-------+------
  PREPARE prep1 AS SELECT COUNT(*) FROM test | t        |     4 |    4
-(1 row)
-
---
--- access to pg_stat_statements_info view
---
-SELECT pg_stat_statements_reset();
- pg_stat_statements_reset 
---------------------------
- 
-(1 row)
-
-SELECT dealloc FROM pg_stat_statements_info;
- dealloc 
----------
-       0
-(1 row)
-
---
--- top level handling
---
-SET pg_stat_statements.track = 'top';
-DELETE FROM test;
-DO $$
-BEGIN
-    DELETE FROM test;
-END;
-$$ LANGUAGE plpgsql;
-SELECT query, toplevel, plans, calls FROM pg_stat_statements WHERE query LIKE '%DELETE%' ORDER BY query COLLATE "C", toplevel;
-         query         | toplevel | plans | calls 
------------------------+----------+-------+-------
- DELETE FROM test      | t        |     1 |     1
- DO $$                +| t        |     0 |     1
- BEGIN                +|          |       | 
-     DELETE FROM test;+|          |       | 
- END;                 +|          |       | 
- $$ LANGUAGE plpgsql   |          |       | 
-(2 rows)
-
-SET pg_stat_statements.track = 'all';
-DELETE FROM test;
-DO $$
-BEGIN
-    DELETE FROM test;
-END;
-$$ LANGUAGE plpgsql;
-SELECT query, toplevel, plans, calls FROM pg_stat_statements WHERE query LIKE '%DELETE%' ORDER BY query COLLATE "C", toplevel;
-         query         | toplevel | plans | calls 
------------------------+----------+-------+-------
- DELETE FROM test      | f        |     1 |     1
- DELETE FROM test      | t        |     2 |     2
- DO $$                +| t        |     0 |     2
- BEGIN                +|          |       | 
-     DELETE FROM test;+|          |       | 
- END;                 +|          |       | 
- $$ LANGUAGE plpgsql   |          |       | 
-(3 rows)
-
--- FROM [ONLY]
-CREATE TABLE tbl_inh(id integer);
-CREATE TABLE tbl_inh_1() INHERITS (tbl_inh);
-INSERT INTO tbl_inh_1 SELECT 1;
-SELECT * FROM tbl_inh;
- id 
-----
-  1
-(1 row)
-
-SELECT * FROM ONLY tbl_inh;
- id 
-----
-(0 rows)
-
-SELECT COUNT(*) FROM pg_stat_statements WHERE query LIKE '%FROM%tbl_inh%';
- count 
--------
-     2
-(1 row)
-
--- WITH TIES
-CREATE TABLE limitoption AS SELECT 0 AS val FROM generate_series(1, 10);
-SELECT *
-FROM limitoption
-WHERE val < 2
-ORDER BY val
-FETCH FIRST 2 ROWS WITH TIES;
- val 
------
-   0
-   0
-   0
-   0
-   0
-   0
-   0
-   0
-   0
-   0
-(10 rows)
-
-SELECT *
-FROM limitoption
-WHERE val < 2
-ORDER BY val
-FETCH FIRST 2 ROW ONLY;
- val 
------
-   0
-   0
-(2 rows)
-
-SELECT COUNT(*) FROM pg_stat_statements WHERE query LIKE '%FETCH FIRST%';
- count 
--------
-     2
-(1 row)
-
--- GROUP BY [DISTINCT]
-SELECT a, b, c
-FROM (VALUES (1, 2, 3), (4, NULL, 6), (7, 8, 9)) AS t (a, b, c)
-GROUP BY ROLLUP(a, b), rollup(a, c)
-ORDER BY a, b, c;
- a | b | c 
----+---+---
- 1 | 2 | 3
- 1 | 2 |  
- 1 | 2 |  
- 1 |   | 3
- 1 |   | 3
- 1 |   |  
- 1 |   |  
- 1 |   |  
- 4 |   | 6
- 4 |   | 6
- 4 |   | 6
- 4 |   |  
- 4 |   |  
- 4 |   |  
- 4 |   |  
- 4 |   |  
- 7 | 8 | 9
- 7 | 8 |  
- 7 | 8 |  
- 7 |   | 9
- 7 |   | 9
- 7 |   |  
- 7 |   |  
- 7 |   |  
-   |   |  
-(25 rows)
-
-SELECT a, b, c
-FROM (VALUES (1, 2, 3), (4, NULL, 6), (7, 8, 9)) AS t (a, b, c)
-GROUP BY DISTINCT ROLLUP(a, b), rollup(a, c)
-ORDER BY a, b, c;
- a | b | c 
----+---+---
- 1 | 2 | 3
- 1 | 2 |  
- 1 |   | 3
- 1 |   |  
- 4 |   | 6
- 4 |   | 6
- 4 |   |  
- 4 |   |  
- 7 | 8 | 9
- 7 | 8 |  
- 7 |   | 9
- 7 |   |  
-   |   |  
-(13 rows)
-
-SELECT COUNT(*) FROM pg_stat_statements WHERE query LIKE '%GROUP BY%ROLLUP%';
- count 
--------
-     2
-(1 row)
-
--- GROUPING SET agglevelsup
-SELECT (
-  SELECT (
-    SELECT GROUPING(a,b) FROM (VALUES (1)) v2(c)
-  ) FROM (VALUES (1,2)) v1(a,b) GROUP BY (a,b)
-) FROM (VALUES(6,7)) v3(e,f) GROUP BY ROLLUP(e,f);
- grouping 
-----------
-        0
-        0
-        0
-(3 rows)
-
-SELECT (
-  SELECT (
-    SELECT GROUPING(e,f) FROM (VALUES (1)) v2(c)
-  ) FROM (VALUES (1,2)) v1(a,b) GROUP BY (a,b)
-) FROM (VALUES(6,7)) v3(e,f) GROUP BY ROLLUP(e,f);
- grouping 
-----------
-        3
-        0
-        1
-(3 rows)
-
-SELECT COUNT(*) FROM pg_stat_statements WHERE query LIKE '%SELECT GROUPING%';
- count 
--------
-     2
 (1 row)
 
 DROP EXTENSION pg_stat_statements;

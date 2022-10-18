@@ -3,7 +3,7 @@
  * spgdesc.c
  *	  rmgr descriptor routines for access/spgist/spgxlog.c
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -28,9 +28,10 @@ spg_desc(StringInfo buf, XLogReaderState *record)
 			{
 				spgxlogAddLeaf *xlrec = (spgxlogAddLeaf *) rec;
 
-				appendStringInfo(buf, "off: %u, headoff: %u, parentoff: %u, nodeI: %u",
+				appendStringInfoString(buf, "add leaf to page");
+				appendStringInfo(buf, "; off %u; headoff %u; parentoff %u",
 								 xlrec->offnumLeaf, xlrec->offnumHeadLeaf,
-								 xlrec->offnumParent, xlrec->nodeI);
+								 xlrec->offnumParent);
 				if (xlrec->newPage)
 					appendStringInfoString(buf, " (newpage)");
 				if (xlrec->storesNulls)
@@ -38,91 +39,42 @@ spg_desc(StringInfo buf, XLogReaderState *record)
 			}
 			break;
 		case XLOG_SPGIST_MOVE_LEAFS:
-			{
-				spgxlogMoveLeafs *xlrec = (spgxlogMoveLeafs *) rec;
-
-				appendStringInfo(buf, "nmoves: %u, parentoff: %u, nodeI: %u",
-								 xlrec->nMoves,
-								 xlrec->offnumParent, xlrec->nodeI);
-				if (xlrec->newPage)
-					appendStringInfoString(buf, " (newpage)");
-				if (xlrec->replaceDead)
-					appendStringInfoString(buf, " (replacedead)");
-				if (xlrec->storesNulls)
-					appendStringInfoString(buf, " (nulls)");
-			}
+			appendStringInfo(buf, "%u leafs",
+							 ((spgxlogMoveLeafs *) rec)->nMoves);
 			break;
 		case XLOG_SPGIST_ADD_NODE:
-			{
-				spgxlogAddNode *xlrec = (spgxlogAddNode *) rec;
-
-				appendStringInfo(buf, "off: %u, newoff: %u, parentBlk: %d, "
-								 "parentoff: %u, nodeI: %u",
-								 xlrec->offnum,
-								 xlrec->offnumNew,
-								 xlrec->parentBlk,
-								 xlrec->offnumParent,
-								 xlrec->nodeI);
-				if (xlrec->newPage)
-					appendStringInfoString(buf, " (newpage)");
-			}
+			appendStringInfo(buf, "off %u",
+							 ((spgxlogAddNode *) rec)->offnum);
 			break;
 		case XLOG_SPGIST_SPLIT_TUPLE:
-			{
-				spgxlogSplitTuple *xlrec = (spgxlogSplitTuple *) rec;
-
-				appendStringInfo(buf, "prefixoff: %u, postfixoff: %u",
-								 xlrec->offnumPrefix,
-								 xlrec->offnumPostfix);
-				if (xlrec->newPage)
-					appendStringInfoString(buf, " (newpage)");
-				if (xlrec->postfixBlkSame)
-					appendStringInfoString(buf, " (same)");
-			}
+			appendStringInfo(buf, "prefix off: %u, postfix off: %u (same %d, new %d)",
+							 ((spgxlogSplitTuple *) rec)->offnumPrefix,
+							 ((spgxlogSplitTuple *) rec)->offnumPostfix,
+							 ((spgxlogSplitTuple *) rec)->postfixBlkSame,
+							 ((spgxlogSplitTuple *) rec)->newPage
+				);
 			break;
 		case XLOG_SPGIST_PICKSPLIT:
 			{
 				spgxlogPickSplit *xlrec = (spgxlogPickSplit *) rec;
 
-				appendStringInfo(buf, "ndelete: %u, ninsert: %u, inneroff: %u, "
-								 "parentoff: %u, nodeI: %u",
-								 xlrec->nDelete, xlrec->nInsert,
-								 xlrec->offnumInner,
-								 xlrec->offnumParent, xlrec->nodeI);
+				appendStringInfo(buf, "ndel %u; nins %u",
+								 xlrec->nDelete, xlrec->nInsert);
 				if (xlrec->innerIsParent)
 					appendStringInfoString(buf, " (innerIsParent)");
-				if (xlrec->storesNulls)
-					appendStringInfoString(buf, " (nulls)");
 				if (xlrec->isRootSplit)
 					appendStringInfoString(buf, " (isRootSplit)");
 			}
 			break;
 		case XLOG_SPGIST_VACUUM_LEAF:
-			{
-				spgxlogVacuumLeaf *xlrec = (spgxlogVacuumLeaf *) rec;
-
-				appendStringInfo(buf, "ndead: %u, nplaceholder: %u, nmove: %u, nchain: %u",
-								 xlrec->nDead, xlrec->nPlaceholder,
-								 xlrec->nMove, xlrec->nChain);
-			}
+			/* no further information */
 			break;
 		case XLOG_SPGIST_VACUUM_ROOT:
-			{
-				spgxlogVacuumRoot *xlrec = (spgxlogVacuumRoot *) rec;
-
-				appendStringInfo(buf, "ndelete: %u",
-								 xlrec->nDelete);
-			}
+			/* no further information */
 			break;
 		case XLOG_SPGIST_VACUUM_REDIRECT:
-			{
-				spgxlogVacuumRedirect *xlrec = (spgxlogVacuumRedirect *) rec;
-
-				appendStringInfo(buf, "ntoplaceholder: %u, firstplaceholder: %u, newestredirectxid: %u",
-								 xlrec->nToPlaceholder,
-								 xlrec->firstPlaceholder,
-								 xlrec->newestRedirectXid);
-			}
+			appendStringInfo(buf, "newest XID %u",
+							 ((spgxlogVacuumRedirect *) rec)->newestRedirectXid);
 			break;
 	}
 }

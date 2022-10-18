@@ -115,6 +115,7 @@ cx(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring,
 		for (i = 0; i < num_gene; i++)
 			if (tour1[i] != offspring[i])
 				num_diffs++;
+
 	}
 
 	return num_diffs;

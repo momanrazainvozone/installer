@@ -4,7 +4,7 @@
  *	  POSTGRES free space map for quickly finding free space in relations
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -24,7 +24,6 @@
 #include "postgres.h"
 
 #include "access/htup_details.h"
-#include "access/xloginsert.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "storage/freespace.h"
@@ -68,7 +67,7 @@
 /*
  * Depth of the on-disk tree. We need to be able to address 2^32-1 blocks,
  * and 1626 is the smallest number that satisfies X^3 >= 2^32-1. Likewise,
- * 256 is the smallest number that satisfies X^4 >= 2^32-1. In practice,
+ * 216 is the smallest number that satisfies X^4 >= 2^32-1. In practice,
  * this means that 4096 bytes is the smallest BLCKSZ that we can get away
  * with a 3-level tree, and 512 is the smallest we support.
  */
@@ -211,8 +210,7 @@ XLogRecordPageWithFreeSpace(RelFileNode rnode, BlockNumber heapBlk,
 	blkno = fsm_logical_to_physical(addr);
 
 	/* If the page doesn't exist already, extend */
-	buf = XLogReadBufferExtended(rnode, FSM_FORKNUM, blkno, RBM_ZERO_ON_ERROR,
-								 InvalidBuffer);
+	buf = XLogReadBufferExtended(rnode, FSM_FORKNUM, blkno, RBM_ZERO_ON_ERROR);
 	LockBuffer(buf, BUFFER_LOCK_EXCLUSIVE);
 
 	page = BufferGetPage(buf);
@@ -267,11 +265,13 @@ FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
 	uint16		first_removed_slot;
 	Buffer		buf;
 
+	RelationOpenSmgr(rel);
+
 	/*
 	 * If no FSM has been created yet for this relation, there's nothing to
 	 * truncate.
 	 */
-	if (!smgrexists(RelationGetSmgr(rel), FSM_FORKNUM))
+	if (!smgrexists(rel->rd_smgr, FSM_FORKNUM))
 		return InvalidBlockNumber;
 
 	/* Get the location in the FSM of the first removed heap block */
@@ -317,7 +317,7 @@ FreeSpaceMapPrepareTruncateRel(Relation rel, BlockNumber nblocks)
 	else
 	{
 		new_nfsmblocks = fsm_logical_to_physical(first_removed_address);
-		if (smgrnblocks(RelationGetSmgr(rel), FSM_FORKNUM) <= new_nfsmblocks)
+		if (smgrnblocks(rel->rd_smgr, FSM_FORKNUM) <= new_nfsmblocks)
 			return InvalidBlockNumber;	/* nothing to do; the FSM was already
 										 * smaller */
 	}
@@ -532,14 +532,8 @@ fsm_readbuf(Relation rel, FSMAddress addr, bool extend)
 {
 	BlockNumber blkno = fsm_logical_to_physical(addr);
 	Buffer		buf;
-	SMgrRelation reln;
 
-	/*
-	 * Caution: re-using this smgr pointer could fail if the relcache entry
-	 * gets closed.  It's safe as long as we only do smgr-level operations
-	 * between here and the last use of the pointer.
-	 */
-	reln = RelationGetSmgr(rel);
+	RelationOpenSmgr(rel);
 
 	/*
 	 * If we haven't cached the size of the FSM yet, check it first.  Also
@@ -547,19 +541,18 @@ fsm_readbuf(Relation rel, FSMAddress addr, bool extend)
 	 * value might be stale.  (We send smgr inval messages on truncation, but
 	 * not on extension.)
 	 */
-	if (reln->smgr_cached_nblocks[FSM_FORKNUM] == InvalidBlockNumber ||
-		blkno >= reln->smgr_cached_nblocks[FSM_FORKNUM])
+	if (rel->rd_smgr->smgr_fsm_nblocks == InvalidBlockNumber ||
+		blkno >= rel->rd_smgr->smgr_fsm_nblocks)
 	{
-		/* Invalidate the cache so smgrnblocks asks the kernel. */
-		reln->smgr_cached_nblocks[FSM_FORKNUM] = InvalidBlockNumber;
-		if (smgrexists(reln, FSM_FORKNUM))
-			smgrnblocks(reln, FSM_FORKNUM);
+		if (smgrexists(rel->rd_smgr, FSM_FORKNUM))
+			rel->rd_smgr->smgr_fsm_nblocks = smgrnblocks(rel->rd_smgr,
+														 FSM_FORKNUM);
 		else
-			reln->smgr_cached_nblocks[FSM_FORKNUM] = 0;
+			rel->rd_smgr->smgr_fsm_nblocks = 0;
 	}
 
 	/* Handle requests beyond EOF */
-	if (blkno >= reln->smgr_cached_nblocks[FSM_FORKNUM])
+	if (blkno >= rel->rd_smgr->smgr_fsm_nblocks)
 	{
 		if (extend)
 			fsm_extend(rel, blkno + 1);
@@ -609,7 +602,6 @@ fsm_extend(Relation rel, BlockNumber fsm_nblocks)
 {
 	BlockNumber fsm_nblocks_now;
 	PGAlignedBlock pg;
-	SMgrRelation reln;
 
 	PageInit((Page) pg.data, BLCKSZ, 0);
 
@@ -625,36 +617,31 @@ fsm_extend(Relation rel, BlockNumber fsm_nblocks)
 	 */
 	LockRelationForExtension(rel, ExclusiveLock);
 
-	/*
-	 * Caution: re-using this smgr pointer could fail if the relcache entry
-	 * gets closed.  It's safe as long as we only do smgr-level operations
-	 * between here and the last use of the pointer.
-	 */
-	reln = RelationGetSmgr(rel);
+	/* Might have to re-open if a cache flush happened */
+	RelationOpenSmgr(rel);
 
 	/*
-	 * Create the FSM file first if it doesn't exist.  If
-	 * smgr_cached_nblocks[FSM_FORKNUM] is positive then it must exist, no
-	 * need for an smgrexists call.
+	 * Create the FSM file first if it doesn't exist.  If smgr_fsm_nblocks is
+	 * positive then it must exist, no need for an smgrexists call.
 	 */
-	if ((reln->smgr_cached_nblocks[FSM_FORKNUM] == 0 ||
-		 reln->smgr_cached_nblocks[FSM_FORKNUM] == InvalidBlockNumber) &&
-		!smgrexists(reln, FSM_FORKNUM))
-		smgrcreate(reln, FSM_FORKNUM, false);
+	if ((rel->rd_smgr->smgr_fsm_nblocks == 0 ||
+		 rel->rd_smgr->smgr_fsm_nblocks == InvalidBlockNumber) &&
+		!smgrexists(rel->rd_smgr, FSM_FORKNUM))
+		smgrcreate(rel->rd_smgr, FSM_FORKNUM, false);
 
-	/* Invalidate cache so that smgrnblocks() asks the kernel. */
-	reln->smgr_cached_nblocks[FSM_FORKNUM] = InvalidBlockNumber;
-	fsm_nblocks_now = smgrnblocks(reln, FSM_FORKNUM);
+	fsm_nblocks_now = smgrnblocks(rel->rd_smgr, FSM_FORKNUM);
 
-	/* Extend as needed. */
 	while (fsm_nblocks_now < fsm_nblocks)
 	{
 		PageSetChecksumInplace((Page) pg.data, fsm_nblocks_now);
 
-		smgrextend(reln, FSM_FORKNUM, fsm_nblocks_now,
+		smgrextend(rel->rd_smgr, FSM_FORKNUM, fsm_nblocks_now,
 				   pg.data, false);
 		fsm_nblocks_now++;
 	}
+
+	/* Update local cache with the up-to-date size */
+	rel->rd_smgr->smgr_fsm_nblocks = fsm_nblocks_now;
 
 	UnlockRelationForExtension(rel, ExclusiveLock);
 }

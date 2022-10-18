@@ -1,11 +1,8 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 17;
 
 program_help_ok('pg_controldata');
 program_version_ok('pg_controldata');
@@ -14,7 +11,7 @@ command_fails(['pg_controldata'], 'pg_controldata without arguments fails');
 command_fails([ 'pg_controldata', 'nonexistent' ],
 	'pg_controldata with nonexistent directory fails');
 
-my $node = PostgreSQL::Test::Cluster->new('main');
+my $node = get_new_node('main');
 $node->init;
 
 command_like([ 'pg_controldata', $node->data_dir ],
@@ -42,5 +39,3 @@ command_checks_all(
 	],
 	[qr/^$/],
 	'pg_controldata with corrupted pg_control');
-
-done_testing();

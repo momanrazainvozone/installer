@@ -1,18 +1,15 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 13;
 
 program_help_ok('dropdb');
 program_version_ok('dropdb');
 program_options_handling_ok('dropdb');
 
-my $node = PostgreSQL::Test::Cluster->new('main');
+my $node = get_new_node('main');
 $node->init;
 $node->start;
 
@@ -30,5 +27,3 @@ $node->issues_sql_like(
 
 $node->command_fails([ 'dropdb', 'nonexistent' ],
 	'fails with nonexistent database');
-
-done_testing();

@@ -1,6 +1,6 @@
 # src/test/modules/brin/Makefile
 
-EXTRA_INSTALL = contrib/pageinspect contrib/pg_walinspect
+EXTRA_INSTALL = contrib/pageinspect
 
 ISOLATION = summarization-and-inprogress-insertion
 TAP_TESTS = 1

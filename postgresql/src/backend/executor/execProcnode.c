@@ -7,7 +7,7 @@
  *	 ExecProcNode, or ExecEndNode on its subnodes and do the appropriate
  *	 processing.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -94,7 +94,6 @@
 #include "executor/nodeLimit.h"
 #include "executor/nodeLockRows.h"
 #include "executor/nodeMaterial.h"
-#include "executor/nodeMemoize.h"
 #include "executor/nodeMergeAppend.h"
 #include "executor/nodeMergejoin.h"
 #include "executor/nodeModifyTable.h"
@@ -110,7 +109,6 @@
 #include "executor/nodeSubplan.h"
 #include "executor/nodeSubqueryscan.h"
 #include "executor/nodeTableFuncscan.h"
-#include "executor/nodeTidrangescan.h"
 #include "executor/nodeTidscan.h"
 #include "executor/nodeUnique.h"
 #include "executor/nodeValuesscan.h"
@@ -121,7 +119,6 @@
 
 static TupleTableSlot *ExecProcNodeFirst(PlanState *node);
 static TupleTableSlot *ExecProcNodeInstr(PlanState *node);
-static bool ExecShutdownNode_walker(PlanState *node, void *context);
 
 
 /* ------------------------------------------------------------------------
@@ -241,11 +238,6 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 												   estate, eflags);
 			break;
 
-		case T_TidRangeScan:
-			result = (PlanState *) ExecInitTidRangeScan((TidRangeScan *) node,
-														estate, eflags);
-			break;
-
 		case T_SubqueryScan:
 			result = (PlanState *) ExecInitSubqueryScan((SubqueryScan *) node,
 														estate, eflags);
@@ -327,11 +319,6 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 														   estate, eflags);
 			break;
 
-		case T_Memoize:
-			result = (PlanState *) ExecInitMemoize((Memoize *) node, estate,
-												   eflags);
-			break;
-
 		case T_Group:
 			result = (PlanState *) ExecInitGroup((Group *) node,
 												 estate, eflags);
@@ -408,8 +395,7 @@ ExecInitNode(Plan *node, EState *estate, int eflags)
 
 	/* Set up instrumentation for this node if requested */
 	if (estate->es_instrument)
-		result->instrument = InstrAlloc(1, estate->es_instrument,
-										result->async_capable);
+		result->instrument = InstrAlloc(1, estate->es_instrument);
 
 	return result;
 }
@@ -651,10 +637,6 @@ ExecEndNode(PlanState *node)
 			ExecEndTidScan((TidScanState *) node);
 			break;
 
-		case T_TidRangeScanState:
-			ExecEndTidRangeScan((TidRangeScanState *) node);
-			break;
-
 		case T_SubqueryScanState:
 			ExecEndSubqueryScan((SubqueryScanState *) node);
 			break;
@@ -721,10 +703,6 @@ ExecEndNode(PlanState *node)
 			ExecEndIncrementalSort((IncrementalSortState *) node);
 			break;
 
-		case T_MemoizeState:
-			ExecEndMemoize((MemoizeState *) node);
-			break;
-
 		case T_GroupState:
 			ExecEndGroup((GroupState *) node);
 			break;
@@ -772,12 +750,6 @@ ExecEndNode(PlanState *node)
 bool
 ExecShutdownNode(PlanState *node)
 {
-	return ExecShutdownNode_walker(node, NULL);
-}
-
-static bool
-ExecShutdownNode_walker(PlanState *node, void *context)
-{
 	if (node == NULL)
 		return false;
 
@@ -796,7 +768,7 @@ ExecShutdownNode_walker(PlanState *node, void *context)
 	if (node->instrument && node->instrument->running)
 		InstrStartNode(node->instrument);
 
-	planstate_tree_walker(node, ExecShutdownNode_walker, context);
+	planstate_tree_walker(node, ExecShutdownNode, NULL);
 
 	switch (nodeTag(node))
 	{

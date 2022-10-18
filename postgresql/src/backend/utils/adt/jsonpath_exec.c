@@ -49,7 +49,7 @@
  * we calculate operands first.  Then we check that results are numeric
  * singleton lists, calculate the result and pass it to the next path item.
  *
- * Copyright (c) 2019-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath_exec.c
@@ -263,7 +263,7 @@ static int	compareDatetime(Datum val1, Oid typid1, Datum val2, Oid typid2,
  *		implement @? and @@ operators, which in turn are intended to have an
  *		index support.  Thus, it's desirable to make it easier to achieve
  *		consistency between index scan results and sequential scan results.
- *		So, we throw as few errors as possible.  Regarding this function,
+ *		So, we throw as less errors as possible.  Regarding this function,
  *		such behavior also matches behavior of JSON_EXISTS() clause of
  *		SQL/JSON.  Regarding jsonb_path_match(), this function doesn't have
  *		an analogy in SQL/JSON, so we define its behavior on our own.
@@ -842,7 +842,9 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				lastjbv = hasNext ? &tmpjbv : palloc(sizeof(*lastjbv));
 
 				lastjbv->type = jbvNumeric;
-				lastjbv->val.numeric = int64_to_numeric(last);
+				lastjbv->val.numeric =
+					DatumGetNumeric(DirectFunctionCall1(int4_numeric,
+														Int32GetDatum(last)));
 
 				res = executeNextItem(cxt, jsp, &elem,
 									  lastjbv, found, hasNext);
@@ -1010,7 +1012,9 @@ executeItemOptUnwrapTarget(JsonPathExecContext *cxt, JsonPathItem *jsp,
 				jb = palloc(sizeof(*jb));
 
 				jb->type = jbvNumeric;
-				jb->val.numeric = int64_to_numeric(size);
+				jb->val.numeric =
+					DatumGetNumeric(DirectFunctionCall1(int4_numeric,
+														Int32GetDatum(size)));
 
 				res = executeNextItem(cxt, jsp, NULL, jb, found, false);
 			}
@@ -1981,7 +1985,8 @@ executeKeyValueMethod(JsonPathExecContext *cxt, JsonPathItem *jsp,
 	id += (int64) cxt->baseObject.id * INT64CONST(10000000000);
 
 	idval.type = jbvNumeric;
-	idval.val.numeric = int64_to_numeric(id);
+	idval.val.numeric = DatumGetNumeric(DirectFunctionCall1(int8_numeric,
+															Int64GetDatum(id)));
 
 	it = JsonbIteratorInit(jbc);
 
@@ -2643,7 +2648,7 @@ static int
 compareDatetime(Datum val1, Oid typid1, Datum val2, Oid typid2,
 				bool useTz, bool *cast_error)
 {
-	PGFunction	cmpfunc;
+	PGFunction cmpfunc;
 
 	*cast_error = false;
 

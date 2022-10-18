@@ -3,7 +3,7 @@
  * pg_enum.c
  *	  routines to support manipulation of the pg_enum relation
  *
- * Copyright (c) 2006-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2006-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -41,11 +41,10 @@ Oid			binary_upgrade_next_pg_enum_oid = InvalidOid;
  * committed; otherwise, they might get into indexes where we can't clean
  * them up, and then if the transaction rolls back we have a broken index.
  * (See comments for check_safe_enum_use() in enum.c.)  Values created by
- * EnumValuesCreate are *not* entered into the table; we assume those are
- * created during CREATE TYPE, so they can't go away unless the enum type
- * itself does.
+ * EnumValuesCreate are *not* blacklisted; we assume those are created during
+ * CREATE TYPE, so they can't go away unless the enum type itself does.
  */
-static HTAB *uncommitted_enums = NULL;
+static HTAB *enum_blacklist = NULL;
 
 static void RenumberEnumType(Relation pg_enum, HeapTuple *existing, int nelems);
 static int	sort_order_cmp(const void *p1, const void *p2);
@@ -55,7 +54,7 @@ static int	sort_order_cmp(const void *p1, const void *p2);
  * EnumValuesCreate
  *		Create an entry in pg_enum for each of the supplied enum values.
  *
- * vals is a list of String values.
+ * vals is a list of Value strings.
  */
 void
 EnumValuesCreate(Oid enumTypeOid, List *vals)
@@ -126,7 +125,7 @@ EnumValuesCreate(Oid enumTypeOid, List *vals)
 			ereport(ERROR,
 					(errcode(ERRCODE_INVALID_NAME),
 					 errmsg("invalid enum label \"%s\"", lab),
-					 errdetail("Labels must be %d bytes or less.",
+					 errdetail("Labels must be %d characters or less.",
 							   NAMEDATALEN - 1)));
 
 		values[Anum_pg_enum_oid - 1] = ObjectIdGetDatum(oids[elemno]);
@@ -182,20 +181,21 @@ EnumValuesDelete(Oid enumTypeOid)
 }
 
 /*
- * Initialize the uncommitted enum table for this transaction.
+ * Initialize the enum blacklist for this transaction.
  */
 static void
-init_uncommitted_enums(void)
+init_enum_blacklist(void)
 {
 	HASHCTL		hash_ctl;
 
+	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(Oid);
 	hash_ctl.hcxt = TopTransactionContext;
-	uncommitted_enums = hash_create("Uncommitted enums",
-									32,
-									&hash_ctl,
-									HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
+	enum_blacklist = hash_create("Enum value blacklist",
+								 32,
+								 &hash_ctl,
+								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 }
 
 /*
@@ -228,7 +228,7 @@ AddEnumLabel(Oid enumTypeOid,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_NAME),
 				 errmsg("invalid enum label \"%s\"", newVal),
-				 errdetail("Labels must be %d bytes or less.",
+				 errdetail("Labels must be %d characters or less.",
 						   NAMEDATALEN - 1)));
 
 	/*
@@ -491,12 +491,12 @@ restart:
 
 	table_close(pg_enum, RowExclusiveLock);
 
-	/* Set up the uncommitted enum table if not already done in this tx */
-	if (uncommitted_enums == NULL)
-		init_uncommitted_enums();
+	/* Set up the blacklist hash if not already done in this transaction */
+	if (enum_blacklist == NULL)
+		init_enum_blacklist();
 
-	/* Add the new value to the table */
-	(void) hash_search(uncommitted_enums, &newOid, HASH_ENTER, NULL);
+	/* Add the new value to the blacklist */
+	(void) hash_search(enum_blacklist, &newOid, HASH_ENTER, NULL);
 }
 
 
@@ -523,7 +523,7 @@ RenameEnumLabel(Oid enumTypeOid,
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_NAME),
 				 errmsg("invalid enum label \"%s\"", newVal),
-				 errdetail("Labels must be %d bytes or less.",
+				 errdetail("Labels must be %d characters or less.",
 						   NAMEDATALEN - 1)));
 
 	/*
@@ -585,19 +585,19 @@ RenameEnumLabel(Oid enumTypeOid,
 
 
 /*
- * Test if the given enum value is in the table of uncommitted enums.
+ * Test if the given enum value is on the blacklist
  */
 bool
-EnumUncommitted(Oid enum_id)
+EnumBlacklisted(Oid enum_id)
 {
 	bool		found;
 
-	/* If we've made no uncommitted table, all values are safe */
-	if (uncommitted_enums == NULL)
+	/* If we've made no blacklist table, all values are safe */
+	if (enum_blacklist == NULL)
 		return false;
 
 	/* Else, is it in the table? */
-	(void) hash_search(uncommitted_enums, &enum_id, HASH_FIND, &found);
+	(void) hash_search(enum_blacklist, &enum_id, HASH_FIND, &found);
 	return found;
 }
 
@@ -609,11 +609,11 @@ void
 AtEOXact_Enum(void)
 {
 	/*
-	 * Reset the uncommitted table, as all our enum values are now committed.
+	 * Reset the blacklist table, as all our enum values are now committed.
 	 * The memory will go away automatically when TopTransactionContext is
 	 * freed; it's sufficient to clear our pointer.
 	 */
-	uncommitted_enums = NULL;
+	enum_blacklist = NULL;
 }
 
 
@@ -692,12 +692,12 @@ sort_order_cmp(const void *p1, const void *p2)
 }
 
 Size
-EstimateUncommittedEnumsSpace(void)
+EstimateEnumBlacklistSpace(void)
 {
 	size_t		entries;
 
-	if (uncommitted_enums)
-		entries = hash_get_num_entries(uncommitted_enums);
+	if (enum_blacklist)
+		entries = hash_get_num_entries(enum_blacklist);
 	else
 		entries = 0;
 
@@ -706,7 +706,7 @@ EstimateUncommittedEnumsSpace(void)
 }
 
 void
-SerializeUncommittedEnums(void *space, Size size)
+SerializeEnumBlacklist(void *space, Size size)
 {
 	Oid		   *serialized = (Oid *) space;
 
@@ -714,15 +714,15 @@ SerializeUncommittedEnums(void *space, Size size)
 	 * Make sure the hash table hasn't changed in size since the caller
 	 * reserved the space.
 	 */
-	Assert(size == EstimateUncommittedEnumsSpace());
+	Assert(size == EstimateEnumBlacklistSpace());
 
 	/* Write out all the values from the hash table, if there is one. */
-	if (uncommitted_enums)
+	if (enum_blacklist)
 	{
 		HASH_SEQ_STATUS status;
 		Oid		   *value;
 
-		hash_seq_init(&status, uncommitted_enums);
+		hash_seq_init(&status, enum_blacklist);
 		while ((value = (Oid *) hash_seq_search(&status)))
 			*serialized++ = *value;
 	}
@@ -738,11 +738,11 @@ SerializeUncommittedEnums(void *space, Size size)
 }
 
 void
-RestoreUncommittedEnums(void *space)
+RestoreEnumBlacklist(void *space)
 {
 	Oid		   *serialized = (Oid *) space;
 
-	Assert(!uncommitted_enums);
+	Assert(!enum_blacklist);
 
 	/*
 	 * As a special case, if the list is empty then don't even bother to
@@ -753,9 +753,9 @@ RestoreUncommittedEnums(void *space)
 		return;
 
 	/* Read all the values into a new hash table. */
-	init_uncommitted_enums();
+	init_enum_blacklist();
 	do
 	{
-		hash_search(uncommitted_enums, serialized++, HASH_ENTER, NULL);
+		hash_search(enum_blacklist, serialized++, HASH_ENTER, NULL);
 	} while (OidIsValid(*serialized));
 }

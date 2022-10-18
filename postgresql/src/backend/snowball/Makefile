@@ -23,8 +23,6 @@ OBJS = \
 	utilities.o
 
 OBJS += \
-	stem_ISO_8859_1_basque.o \
-	stem_ISO_8859_1_catalan.o \
 	stem_ISO_8859_1_danish.o \
 	stem_ISO_8859_1_dutch.o \
 	stem_ISO_8859_1_english.o \
@@ -43,9 +41,6 @@ OBJS += \
 	stem_ISO_8859_2_romanian.o \
 	stem_KOI8_R_russian.o \
 	stem_UTF_8_arabic.o \
-	stem_UTF_8_armenian.o \
-	stem_UTF_8_basque.o \
-	stem_UTF_8_catalan.o \
 	stem_UTF_8_danish.o \
 	stem_UTF_8_dutch.o \
 	stem_UTF_8_english.o \
@@ -53,7 +48,6 @@ OBJS += \
 	stem_UTF_8_french.o \
 	stem_UTF_8_german.o \
 	stem_UTF_8_greek.o \
-	stem_UTF_8_hindi.o \
 	stem_UTF_8_hungarian.o \
 	stem_UTF_8_indonesian.o \
 	stem_UTF_8_irish.o \
@@ -65,12 +59,10 @@ OBJS += \
 	stem_UTF_8_portuguese.o \
 	stem_UTF_8_romanian.o \
 	stem_UTF_8_russian.o \
-	stem_UTF_8_serbian.o \
 	stem_UTF_8_spanish.o \
 	stem_UTF_8_swedish.o \
 	stem_UTF_8_tamil.o \
-	stem_UTF_8_turkish.o \
-	stem_UTF_8_yiddish.o
+	stem_UTF_8_turkish.o
 
 # first column is language name and also name of dictionary for not-all-ASCII
 # words, second is name of dictionary for all-ASCII words
@@ -78,9 +70,6 @@ OBJS += \
 # must come after creation of that language
 LANGUAGES=  \
 	arabic		arabic		\
-	armenian	armenian	\
-	basque		basque		\
-	catalan		catalan		\
 	danish		danish		\
 	dutch		dutch		\
 	english		english		\
@@ -88,7 +77,6 @@ LANGUAGES=  \
 	french		french		\
 	german		german		\
 	greek		greek		\
-	hindi		english		\
 	hungarian	hungarian	\
 	indonesian	indonesian	\
 	irish		irish		\
@@ -99,12 +87,10 @@ LANGUAGES=  \
 	portuguese	portuguese	\
 	romanian	romanian	\
 	russian		english		\
-	serbian		serbian		\
 	spanish		spanish		\
 	swedish		swedish		\
 	tamil		tamil		\
-	turkish		turkish		\
-	yiddish		yiddish
+	turkish		turkish
 
 
 SQLSCRIPT= snowball_create.sql

@@ -3,16 +3,16 @@
 #################################################################
 # version_stamp.pl -- update version stamps throughout the source tree
 #
-# Copyright (c) 2008-2022, PostgreSQL Global Development Group
+# Copyright (c) 2008-2020, PostgreSQL Global Development Group
 #
 # src/tools/version_stamp.pl
 #################################################################
 
 #
-# This script updates the version stamp in configure.ac, and also in assorted
+# This script updates the version stamp in configure.in, and also in assorted
 # other files wherein it's not convenient to obtain the version number from
 # configure's output.  Note that you still have to run autoconf afterward
-# to regenerate configure from the updated configure.ac.
+# to regenerate configure from the updated configure.in.
 #
 # Usage: cd to top of source tree and issue
 #	src/tools/version_stamp.pl MINORVERSION
@@ -25,7 +25,7 @@ use warnings;
 
 # Major version is hard-wired into the script.  We update it when we branch
 # a new development version.
-my $majorversion = 15;
+my $majorversion = 13;
 
 # Validate argument and compute derived variables
 my $minor = shift;
@@ -74,7 +74,7 @@ else
 # (this also ensures we're in the right directory)
 
 my $aconfver = "";
-open(my $fh, '<', "configure.ac") || die "could not read configure.ac: $!\n";
+open(my $fh, '<', "configure.in") || die "could not read configure.in: $!\n";
 while (<$fh>)
 {
 	if (m/^m4_if\(m4_defn\(\[m4_PACKAGE_VERSION\]\), \[(.*)\], \[\], \[m4_fatal/
@@ -86,13 +86,13 @@ while (<$fh>)
 }
 close($fh);
 $aconfver ne ""
-  || die "could not find autoconf version number in configure.ac\n";
+  || die "could not find autoconf version number in configure.in\n";
 
-# Update configure.ac and other files that contain version numbers
+# Update configure.in and other files that contain version numbers
 
 my $fixedfiles = "";
 
-sed_file("configure.ac",
+sed_file("configure.in",
 	"-e 's/AC_INIT(\\[PostgreSQL\\], \\[[0-9a-z.]*\\]/AC_INIT([PostgreSQL], [$fullversion]/'"
 );
 

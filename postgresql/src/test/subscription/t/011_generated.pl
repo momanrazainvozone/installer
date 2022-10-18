@@ -1,20 +1,17 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test generated columns
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 2;
 
 # setup
 
-my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
+my $node_publisher = get_new_node('publisher');
 $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
-my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
+my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
@@ -40,7 +37,10 @@ $node_subscriber->safe_psql('postgres',
 );
 
 # Wait for initial sync of all subscriptions
-$node_subscriber->wait_for_subscription_sync;
+my $synced_query =
+  "SELECT count(1) = 0 FROM pg_subscription_rel WHERE srsubstate NOT IN ('r', 's');";
+$node_subscriber->poll_query_until('postgres', $synced_query)
+  or die "Timed out while waiting for subscriber to synchronize data";
 
 my $result = $node_subscriber->safe_psql('postgres', "SELECT a, b FROM tab1");
 is( $result, qq(1|22
@@ -61,5 +61,3 @@ is( $result, qq(1|22
 3|66
 4|88
 6|132), 'generated columns replicated');
-
-done_testing();

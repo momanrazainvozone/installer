@@ -13,7 +13,7 @@
  * estimates are already available in pg_statistic.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -36,7 +36,8 @@
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-static double ndistinct_for_combination(double totalrows, StatsBuildData *data,
+static double ndistinct_for_combination(double totalrows, int numrows,
+										HeapTuple *rows, VacAttrStats **stats,
 										int k, int *combination);
 static double estimate_ndistinct(double totalrows, int numrows, int d, int f1);
 static int	n_choose_k(int n, int k);
@@ -80,18 +81,15 @@ static void generate_combinations(CombinationGenerator *state);
  *
  * This computes the ndistinct estimate using the same estimator used
  * in analyze.c and then computes the coefficient.
- *
- * To handle expressions easily, we treat them as system attributes with
- * negative attnums, and offset everything by number of expressions to
- * allow using Bitmapsets.
  */
 MVNDistinct *
-statext_ndistinct_build(double totalrows, StatsBuildData *data)
+statext_ndistinct_build(double totalrows, int numrows, HeapTuple *rows,
+						Bitmapset *attrs, VacAttrStats **stats)
 {
 	MVNDistinct *result;
 	int			k;
 	int			itemcnt;
-	int			numattrs = data->nattnums;
+	int			numattrs = bms_num_members(attrs);
 	int			numcombs = num_combinations(numattrs);
 
 	result = palloc(offsetof(MVNDistinct, items) +
@@ -114,19 +112,13 @@ statext_ndistinct_build(double totalrows, StatsBuildData *data)
 			MVNDistinctItem *item = &result->items[itemcnt];
 			int			j;
 
-			item->attributes = palloc(sizeof(AttrNumber) * k);
-			item->nattributes = k;
-
-			/* translate the indexes to attnums */
+			item->attrs = NULL;
 			for (j = 0; j < k; j++)
-			{
-				item->attributes[j] = data->attnums[combination[j]];
-
-				Assert(AttributeNumberIsValid(item->attributes[j]));
-			}
-
+				item->attrs = bms_add_member(item->attrs,
+											 stats[combination[j]]->attr->attnum);
 			item->ndistinct =
-				ndistinct_for_combination(totalrows, data, k, combination);
+				ndistinct_for_combination(totalrows, numrows, rows,
+										  stats, k, combination);
 
 			itemcnt++;
 			Assert(itemcnt <= result->nitems);
@@ -146,15 +138,14 @@ statext_ndistinct_build(double totalrows, StatsBuildData *data)
  *		Load the ndistinct value for the indicated pg_statistic_ext tuple
  */
 MVNDistinct *
-statext_ndistinct_load(Oid mvoid, bool inh)
+statext_ndistinct_load(Oid mvoid)
 {
 	MVNDistinct *result;
 	bool		isnull;
 	Datum		ndist;
 	HeapTuple	htup;
 
-	htup = SearchSysCache2(STATEXTDATASTXOID,
-						   ObjectIdGetDatum(mvoid), BoolGetDatum(inh));
+	htup = SearchSysCache1(STATEXTDATASTXOID, ObjectIdGetDatum(mvoid));
 	if (!HeapTupleIsValid(htup))
 		elog(ERROR, "cache lookup failed for statistics object %u", mvoid);
 
@@ -198,7 +189,7 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	{
 		int			nmembers;
 
-		nmembers = ndistinct->items[i].nattributes;
+		nmembers = bms_num_members(ndistinct->items[i].attrs);
 		Assert(nmembers >= 2);
 
 		len += SizeOfItem(nmembers);
@@ -223,15 +214,22 @@ statext_ndistinct_serialize(MVNDistinct *ndistinct)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem item = ndistinct->items[i];
-		int			nmembers = item.nattributes;
+		int			nmembers = bms_num_members(item.attrs);
+		int			x;
 
 		memcpy(tmp, &item.ndistinct, sizeof(double));
 		tmp += sizeof(double);
 		memcpy(tmp, &nmembers, sizeof(int));
 		tmp += sizeof(int);
 
-		memcpy(tmp, item.attributes, sizeof(AttrNumber) * nmembers);
-		tmp += nmembers * sizeof(AttrNumber);
+		x = -1;
+		while ((x = bms_next_member(item.attrs, x)) >= 0)
+		{
+			AttrNumber	value = (AttrNumber) x;
+
+			memcpy(tmp, &value, sizeof(AttrNumber));
+			tmp += sizeof(AttrNumber);
+		}
 
 		/* protect against overflows */
 		Assert(tmp <= ((char *) output + len));
@@ -303,21 +301,27 @@ statext_ndistinct_deserialize(bytea *data)
 	for (i = 0; i < ndistinct->nitems; i++)
 	{
 		MVNDistinctItem *item = &ndistinct->items[i];
+		int			nelems;
+
+		item->attrs = NULL;
 
 		/* ndistinct value */
 		memcpy(&item->ndistinct, tmp, sizeof(double));
 		tmp += sizeof(double);
 
 		/* number of attributes */
-		memcpy(&item->nattributes, tmp, sizeof(int));
+		memcpy(&nelems, tmp, sizeof(int));
 		tmp += sizeof(int);
-		Assert((item->nattributes >= 2) && (item->nattributes <= STATS_MAX_DIMENSIONS));
+		Assert((nelems >= 2) && (nelems <= STATS_MAX_DIMENSIONS));
 
-		item->attributes
-			= (AttrNumber *) palloc(item->nattributes * sizeof(AttrNumber));
+		while (nelems-- > 0)
+		{
+			AttrNumber	attno;
 
-		memcpy(item->attributes, tmp, sizeof(AttrNumber) * item->nattributes);
-		tmp += sizeof(AttrNumber) * item->nattributes;
+			memcpy(&attno, tmp, sizeof(AttrNumber));
+			tmp += sizeof(AttrNumber);
+			item->attrs = bms_add_member(item->attrs, attno);
+		}
 
 		/* still within the bytea */
 		Assert(tmp <= ((char *) data + VARSIZE_ANY(data)));
@@ -365,17 +369,17 @@ pg_ndistinct_out(PG_FUNCTION_ARGS)
 
 	for (i = 0; i < ndist->nitems; i++)
 	{
-		int			j;
 		MVNDistinctItem item = ndist->items[i];
+		int			x = -1;
+		bool		first = true;
 
 		if (i > 0)
 			appendStringInfoString(&str, ", ");
 
-		for (j = 0; j < item.nattributes; j++)
+		while ((x = bms_next_member(item.attrs, x)) >= 0)
 		{
-			AttrNumber	attnum = item.attributes[j];
-
-			appendStringInfo(&str, "%s%d", (j == 0) ? "\"" : ", ", attnum);
+			appendStringInfo(&str, "%s%d", first ? "\"" : ", ", x);
+			first = false;
 		}
 		appendStringInfo(&str, "\": %d", (int) item.ndistinct);
 	}
@@ -423,8 +427,8 @@ pg_ndistinct_send(PG_FUNCTION_ARGS)
  * combination of multiple columns.
  */
 static double
-ndistinct_for_combination(double totalrows, StatsBuildData *data,
-						  int k, int *combination)
+ndistinct_for_combination(double totalrows, int numrows, HeapTuple *rows,
+						  VacAttrStats **stats, int k, int *combination)
 {
 	int			i,
 				j;
@@ -435,7 +439,6 @@ ndistinct_for_combination(double totalrows, StatsBuildData *data,
 	Datum	   *values;
 	SortItem   *items;
 	MultiSortSupport mss;
-	int			numrows = data->numrows;
 
 	mss = multi_sort_init(k);
 
@@ -464,33 +467,31 @@ ndistinct_for_combination(double totalrows, StatsBuildData *data,
 	 */
 	for (i = 0; i < k; i++)
 	{
-		Oid			typid;
+		VacAttrStats *colstat = stats[combination[i]];
 		TypeCacheEntry *type;
-		Oid			collid = InvalidOid;
-		VacAttrStats *colstat = data->stats[combination[i]];
 
-		typid = colstat->attrtypid;
-		collid = colstat->attrcollid;
-
-		type = lookup_type_cache(typid, TYPECACHE_LT_OPR);
+		type = lookup_type_cache(colstat->attrtypid, TYPECACHE_LT_OPR);
 		if (type->lt_opr == InvalidOid) /* shouldn't happen */
 			elog(ERROR, "cache lookup failed for ordering operator for type %u",
-				 typid);
+				 colstat->attrtypid);
 
 		/* prepare the sort function for this dimension */
-		multi_sort_add_dimension(mss, i, type->lt_opr, collid);
+		multi_sort_add_dimension(mss, i, type->lt_opr, colstat->attrcollid);
 
 		/* accumulate all the data for this dimension into the arrays */
 		for (j = 0; j < numrows; j++)
 		{
-			items[j].values[i] = data->values[combination[i]][j];
-			items[j].isnull[i] = data->nulls[combination[i]][j];
+			items[j].values[i] =
+				heap_getattr(rows[j],
+							 colstat->attr->attnum,
+							 colstat->tupDesc,
+							 &items[j].isnull[i]);
 		}
 	}
 
 	/* We can sort the array now ... */
-	qsort_interruptible((void *) items, numrows, sizeof(SortItem),
-						multi_sort_compare, mss);
+	qsort_arg((void *) items, numrows, sizeof(SortItem),
+			  multi_sort_compare, mss);
 
 	/* ... and count the number of distinct combinations */
 

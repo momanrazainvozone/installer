@@ -9,8 +9,6 @@ SUBDIRS = \
 		amcheck		\
 		auth_delay	\
 		auto_explain	\
-		basic_archive	\
-		basebackup_to_shell	\
 		bloom		\
 		btree_gin	\
 		btree_gist	\
@@ -29,19 +27,18 @@ SUBDIRS = \
 		lo		\
 		ltree		\
 		oid2name	\
-		old_snapshot	\
 		pageinspect	\
 		passwordcheck	\
 		pg_buffercache	\
 		pg_freespacemap \
 		pg_prewarm	\
+		pg_standby	\
 		pg_stat_statements \
-		pg_surgery	\
 		pg_trgm		\
+		pgcrypto	\
 		pgrowlocks	\
 		pgstattuple	\
 		pg_visibility	\
-		pg_walinspect	\
 		postgres_fdw	\
 		seg		\
 		spi		\
@@ -53,10 +50,10 @@ SUBDIRS = \
 		unaccent	\
 		vacuumlo
 
-ifeq ($(with_ssl),openssl)
-SUBDIRS += pgcrypto sslinfo
+ifeq ($(with_openssl),yes)
+SUBDIRS += sslinfo
 else
-ALWAYS_SUBDIRS += pgcrypto sslinfo
+ALWAYS_SUBDIRS += sslinfo
 endif
 
 ifneq ($(with_uuid),no)

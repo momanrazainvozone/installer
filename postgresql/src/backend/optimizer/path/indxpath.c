@@ -4,7 +4,7 @@
  *	  Routines to determine which indexes are usable for scanning a
  *	  given relation, and create Paths accordingly.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -35,6 +35,12 @@
 #include "utils/lsyscache.h"
 #include "utils/selfuncs.h"
 
+
+/* source-code-compatibility hacks for pull_varnos() API change */
+#define pull_varnos(a,b) pull_varnos_new(a,b)
+#undef make_simple_restrictinfo
+#define make_simple_restrictinfo(root, clause)  \
+	make_restrictinfo_new(root, clause, true, false, false, 0, NULL, NULL, NULL)
 
 /* XXX see PartCollMatchesExprColl */
 #define IndexCollMatchesExprColl(idxcollation, exprcollation) \
@@ -1807,6 +1813,7 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 	bool		result;
 	Bitmapset  *attrs_used = NULL;
 	Bitmapset  *index_canreturn_attrs = NULL;
+	Bitmapset  *index_cannotreturn_attrs = NULL;
 	ListCell   *lc;
 	int			i;
 
@@ -1846,7 +1853,11 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 
 	/*
 	 * Construct a bitmapset of columns that the index can return back in an
-	 * index-only scan.
+	 * index-only scan.  If there are multiple index columns containing the
+	 * same attribute, all of them must be capable of returning the value,
+	 * since we might recheck operators on any of them.  (Potentially we could
+	 * be smarter about that, but it's such a weird situation that it doesn't
+	 * seem worth spending a lot of sweat on.)
 	 */
 	for (i = 0; i < index->ncolumns; i++)
 	{
@@ -1863,13 +1874,21 @@ check_index_only(RelOptInfo *rel, IndexOptInfo *index)
 			index_canreturn_attrs =
 				bms_add_member(index_canreturn_attrs,
 							   attno - FirstLowInvalidHeapAttributeNumber);
+		else
+			index_cannotreturn_attrs =
+				bms_add_member(index_cannotreturn_attrs,
+							   attno - FirstLowInvalidHeapAttributeNumber);
 	}
+
+	index_canreturn_attrs = bms_del_members(index_canreturn_attrs,
+											index_cannotreturn_attrs);
 
 	/* Do we have all the necessary attributes? */
 	result = bms_is_subset(attrs_used, index_canreturn_attrs);
 
 	bms_free(attrs_used);
 	bms_free(index_canreturn_attrs);
+	bms_free(index_cannotreturn_attrs);
 
 	return result;
 }
@@ -1977,7 +1996,6 @@ adjust_rowcount_for_semijoins(PlannerInfo *root,
 			nunique = estimate_num_groups(root,
 										  sjinfo->semi_rhs_exprs,
 										  nraw,
-										  NULL,
 										  NULL);
 			if (rowcount > nunique)
 				rowcount = nunique;
@@ -3385,7 +3403,7 @@ check_index_predicates(PlannerInfo *root, RelOptInfo *rel)
 	 * and pass them through to EvalPlanQual via a side channel; but for now,
 	 * we just don't remove implied quals at all for target relations.
 	 */
-	is_target_rel = (bms_is_member(rel->relid, root->all_result_relids) ||
+	is_target_rel = (rel->relid == root->parse->resultRelation ||
 					 get_plan_rowmark(root->rowMarks, rel->relid) != NULL);
 
 	/*
@@ -3802,7 +3820,13 @@ match_index_to_operand(Node *operand,
  * index: the index of interest
  */
 bool
-is_pseudo_constant_for_index(PlannerInfo *root, Node *expr, IndexOptInfo *index)
+is_pseudo_constant_for_index(Node *expr, IndexOptInfo *index)
+{
+	return is_pseudo_constant_for_index_new(NULL, expr, index);
+}
+
+bool
+is_pseudo_constant_for_index_new(PlannerInfo *root, Node *expr, IndexOptInfo *index)
 {
 	/* pull_varnos is cheaper than volatility check, so do that first */
 	if (bms_is_member(index->rel->relid, pull_varnos(root, expr)))

@@ -377,16 +377,6 @@ the content of the <acronym>TOAST</acronym> pointer tells that, instead.
 </para>
 
 <para>
-The compression technique used for either in-line or out-of-line compressed
-data can be selected for each column by setting
-the <literal>COMPRESSION</literal> column option in <command>CREATE
-TABLE</command> or <command>ALTER TABLE</command>.  The default for columns
-with no explicit setting is to consult the
-<xref linkend="guc-default-toast-compression"/> parameter at the time data is
-inserted.
-</para>
-
-<para>
 As mentioned, there are multiple types of <acronym>TOAST</acronym> pointer datums.
 The oldest and most common type is a pointer to out-of-line data stored in
 a <firstterm><acronym>TOAST</acronym> table</firstterm> that is separate from, but
@@ -400,6 +390,13 @@ out-of-line data that appears elsewhere in memory.  Such datums are
 necessarily short-lived, and will never appear on-disk, but they are very
 useful for avoiding copying and redundant processing of large data values.
 Further details appear in <xref linkend="storage-toast-inmemory"/>.
+</para>
+
+<para>
+The compression technique used for either in-line or out-of-line compressed
+data is a fairly simple and very fast member
+of the LZ family of compression techniques.  See
+<filename>src/common/pg_lzcompress.c</filename> for the details.
 </para>
 
 <sect2 id="storage-toast-ondisk">
@@ -428,9 +425,8 @@ retrieval of the values.  A pointer datum representing an out-of-line on-disk
 <acronym>TOAST</acronym>ed value therefore needs to store the OID of the
 <acronym>TOAST</acronym> table in which to look and the OID of the specific value
 (its <structfield>chunk_id</structfield>).  For convenience, pointer datums also store the
-logical datum size (original uncompressed data length), physical stored size
-(different if compression was applied), and the compression method used, if
-any.  Allowing for the varlena header bytes,
+logical datum size (original uncompressed data length) and physical stored size
+(different if compression was applied).  Allowing for the varlena header bytes,
 the total size of an on-disk <acronym>TOAST</acronym> pointer datum is therefore 18
 bytes regardless of the actual size of the represented value.
 </para>
@@ -603,11 +599,10 @@ tuple would otherwise be too big.
 
 <para>
 Each heap and index relation, except for hash indexes, has a Free Space Map
-(<acronym>FSM</acronym>) to keep track of available space in the relation.
-It's stored alongside the main relation data in a separate relation fork,
-named after the filenode number of the relation, plus a <literal>_fsm</literal>
-suffix. For example, if the filenode of a relation is 12345, the
-<acronym>FSM</acronym> is stored in a file called
+(FSM) to keep track of available space in the relation. It's stored
+alongside the main relation data in a separate relation fork, named after the
+filenode number of the relation, plus a <literal>_fsm</literal> suffix. For example,
+if the filenode of a relation is 12345, the FSM is stored in a file called
 <filename>12345_fsm</filename>, in the same directory as the main relation file.
 </para>
 
@@ -1073,76 +1068,6 @@ data. Empty in ordinary tables.</entry>
 
  </para>
  </sect2>
-</sect1>
-
-<sect1 id="storage-hot">
-
- <title>Heap-Only Tuples (<acronym>HOT</acronym>)</title>
-
- <para>
-  To allow for high concurrency, <productname>PostgreSQL</productname>
-  uses <link linkend="mvcc-intro">multiversion concurrency
-  control</link> (<acronym>MVCC</acronym>) to store rows.  However,
-  <acronym>MVCC</acronym> has some downsides for update queries.
-  Specifically, updates require new versions of rows to be added to
-  tables.  This can also require new index entries for each updated row,
-  and removal of old versions of rows and their index entries can be
-  expensive.
- </para>
-
- <para>
-  To help reduce the overhead of updates,
-  <productname>PostgreSQL</productname> has an optimization called
-  heap-only tuples (<acronym>HOT</acronym>).  This optimization is
-  possible when:
-
-  <itemizedlist>
-   <listitem>
-    <para>
-     The update does not modify any columns referenced by the table's
-     indexes, including expression and partial indexes.
-     </para>
-   </listitem>
-   <listitem>
-    <para>
-     There is sufficient free space on the page containing the old row
-     for the updated row.
-    </para>
-   </listitem>
-  </itemizedlist>
-
-  In such cases, heap-only tuples provide two optimizations:
-
-  <itemizedlist>
-   <listitem>
-    <para>
-     New index entries are not needed to represent updated rows.
-    </para>
-   </listitem>
-   <listitem>
-    <para>
-     Old versions of updated rows can be completely removed during normal
-     operation, including <command>SELECT</command>s, instead of requiring
-     periodic vacuum operations.  (This is possible because indexes
-     do not reference their <link linkend="storage-page-layout">page
-     item identifiers</link>.)
-    </para>
-   </listitem>
-  </itemizedlist>
- </para>
-
- <para>
-  In summary, heap-only tuple updates can only be created
-  if columns used by indexes are not updated.  You can
-  increase the likelihood of sufficient page space for
-  <acronym>HOT</acronym> updates by decreasing a table's <link
-  linkend="sql-createtable"><literal>fillfactor</literal></link>.
-  If you don't, <acronym>HOT</acronym> updates will still happen because
-  new rows will naturally migrate to new pages and existing pages with
-  sufficient free space for new row versions.  The system view <link
-  linkend="monitoring-pg-stat-all-tables-view">pg_stat_all_tables</link>
-  allows monitoring of the occurrence of HOT and non-HOT updates.
- </para>
 </sect1>
 
 </chapter>

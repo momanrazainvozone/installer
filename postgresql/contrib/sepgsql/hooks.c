@@ -4,7 +4,7 @@
  *
  * Entrypoints of the hooks in PostgreSQL, and dispatches the callbacks.
  *
- * Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -313,7 +313,6 @@ sepgsql_exec_check_perms(List *rangeTabls, bool abort)
 static void
 sepgsql_utility_command(PlannedStmt *pstmt,
 						const char *queryString,
-						bool readOnlyTree,
 						ProcessUtilityContext context,
 						ParamListInfo params,
 						QueryEnvironment *queryEnv,
@@ -379,11 +378,11 @@ sepgsql_utility_command(PlannedStmt *pstmt,
 		}
 
 		if (next_ProcessUtility_hook)
-			(*next_ProcessUtility_hook) (pstmt, queryString, readOnlyTree,
+			(*next_ProcessUtility_hook) (pstmt, queryString,
 										 context, params, queryEnv,
 										 dest, qc);
 		else
-			standard_ProcessUtility(pstmt, queryString, readOnlyTree,
+			standard_ProcessUtility(pstmt, queryString,
 									context, params, queryEnv,
 									dest, qc);
 	}
@@ -454,8 +453,6 @@ _PG_init(void)
 							 NULL,
 							 NULL,
 							 NULL);
-
-	MarkGUCPrefixReserved("sepgsql");
 
 	/* Initialize userspace access vector cache */
 	sepgsql_avc_init();

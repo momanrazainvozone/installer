@@ -3,7 +3,7 @@
  *
  *	relfilenode functions
  *
- *	Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/relfilenode.c
  */
 
@@ -32,13 +32,13 @@ transfer_all_new_tablespaces(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 	switch (user_opts.transfer_mode)
 	{
 		case TRANSFER_MODE_CLONE:
-			prep_status_progress("Cloning user relation files");
+			pg_log(PG_REPORT, "Cloning user relation files\n");
 			break;
 		case TRANSFER_MODE_COPY:
-			prep_status_progress("Copying user relation files");
+			pg_log(PG_REPORT, "Copying user relation files\n");
 			break;
 		case TRANSFER_MODE_LINK:
-			prep_status_progress("Linking user relation files");
+			pg_log(PG_REPORT, "Linking user relation files\n");
 			break;
 	}
 
@@ -119,6 +119,8 @@ transfer_all_new_dbs(DbInfoArr *old_db_arr, DbInfoArr *new_db_arr,
 									new_pgdata);
 		if (n_maps)
 		{
+			print_maps(mappings, n_maps, new_db->db_name);
+
 			transfer_single_new_db(mappings, n_maps, old_tablespace);
 		}
 		/* We allocate something even for n_maps == 0 */
@@ -135,7 +137,16 @@ static void
 transfer_single_new_db(FileNameMap *maps, int size, char *old_tablespace)
 {
 	int			mapnum;
+	bool		vm_crashsafe_match = true;
 	bool		vm_must_add_frozenbit = false;
+
+	/*
+	 * Do the old and new cluster disagree on the crash-safetiness of the vm
+	 * files?  If so, do not copy them.
+	 */
+	if (old_cluster.controldata.cat_ver < VISIBILITY_MAP_CRASHSAFE_CAT_VER &&
+		new_cluster.controldata.cat_ver >= VISIBILITY_MAP_CRASHSAFE_CAT_VER)
+		vm_crashsafe_match = false;
 
 	/*
 	 * Do we need to rewrite visibilitymap?
@@ -156,7 +167,8 @@ transfer_single_new_db(FileNameMap *maps, int size, char *old_tablespace)
 			 * Copy/link any fsm and vm files, if they exist
 			 */
 			transfer_relfile(&maps[mapnum], "_fsm", vm_must_add_frozenbit);
-			transfer_relfile(&maps[mapnum], "_vm", vm_must_add_frozenbit);
+			if (vm_crashsafe_match)
+				transfer_relfile(&maps[mapnum], "_vm", vm_must_add_frozenbit);
 		}
 	}
 }
@@ -193,15 +205,15 @@ transfer_relfile(FileNameMap *map, const char *type_suffix, bool vm_must_add_fro
 		snprintf(old_file, sizeof(old_file), "%s%s/%u/%u%s%s",
 				 map->old_tablespace,
 				 map->old_tablespace_suffix,
-				 map->db_oid,
-				 map->relfilenode,
+				 map->old_db_oid,
+				 map->old_relfilenode,
 				 type_suffix,
 				 extent_suffix);
 		snprintf(new_file, sizeof(new_file), "%s%s/%u/%u%s%s",
 				 map->new_tablespace,
 				 map->new_tablespace_suffix,
-				 map->db_oid,
-				 map->relfilenode,
+				 map->new_db_oid,
+				 map->new_relfilenode,
 				 type_suffix,
 				 extent_suffix);
 

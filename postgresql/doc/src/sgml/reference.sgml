@@ -186,7 +186,6 @@
    &listen;
    &load;
    &lock;
-   &merge;
    &move;
    &notify;
    &prepare;
@@ -247,7 +246,6 @@
    &dropdb;
    &dropuser;
    &ecpgRef;
-   &pgamcheck;
    &pgBasebackup;
    &pgbench;
    &pgConfig;

@@ -4,7 +4,7 @@
  *	  routines to support running postgres in 'bootstrap' mode
  *	bootstrap mode is used to create the initial template database
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -21,7 +21,6 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/tableam.h"
-#include "access/toast_compression.h"
 #include "access/xact.h"
 #include "access/xlog_internal.h"
 #include "bootstrap/bootstrap.h"
@@ -33,6 +32,11 @@
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "pg_getopt.h"
+#include "pgstat.h"
+#include "postmaster/bgwriter.h"
+#include "postmaster/startup.h"
+#include "postmaster/walwriter.h"
+#include "replication/walreceiver.h"
 #include "storage/bufmgr.h"
 #include "storage/bufpage.h"
 #include "storage/condition_variable.h"
@@ -42,16 +46,21 @@
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
+#include "utils/ps_status.h"
 #include "utils/rel.h"
 #include "utils/relmapper.h"
 
 uint32		bootstrap_data_checksum_version = 0;	/* No checksum */
 
 
+#define ALLOC(t, c) \
+	((t *) MemoryContextAllocZero(TopMemoryContext, (unsigned)(c) * sizeof(t)))
+
 static void CheckerModeMain(void);
+static void BootstrapModeMain(void);
 static void bootstrap_signals(void);
+static void ShutdownAuxiliaryProcess(int code, Datum arg);
 static Form_pg_attribute AllocateAttribute(void);
-static void populate_typ_list(void);
 static Oid	gettype(char *type);
 static void cleanup(void);
 
@@ -59,6 +68,8 @@ static void cleanup(void);
  *		global variables
  * ----------------
  */
+
+AuxProcType MyAuxProcType = NotAnAuxProcess;	/* declared in miscadmin.h */
 
 Relation	boot_reldesc;		/* current relation descriptor */
 
@@ -124,7 +135,7 @@ static const struct typinfo TypInfo[] = {
 	F_XIDIN, F_XIDOUT},
 	{"cid", CIDOID, 0, 4, true, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_CIDIN, F_CIDOUT},
-	{"pg_node_tree", PG_NODE_TREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
+	{"pg_node_tree", PGNODETREEOID, 0, -1, false, TYPALIGN_INT, TYPSTORAGE_EXTENDED, DEFAULT_COLLATION_OID,
 	F_PG_NODE_TREE_IN, F_PG_NODE_TREE_OUT},
 	{"int2vector", INT2VECTOROID, INT2OID, -1, false, TYPALIGN_INT, TYPSTORAGE_PLAIN, InvalidOid,
 	F_INT2VECTORIN, F_INT2VECTOROUT},
@@ -150,7 +161,7 @@ struct typmap
 	FormData_pg_type am_typ;
 };
 
-static List *Typ = NIL;			/* List of struct typmap* */
+static struct typmap **Typ = NULL;
 static struct typmap *Ap = NULL;
 
 static Datum values[MAXATTR];	/* current row's attribute values */
@@ -176,52 +187,46 @@ static IndexList *ILHead = NULL;
 
 
 /*
- * In shared memory checker mode, all we really want to do is create shared
- * memory and semaphores (just to prove we can do it with the current GUC
- * settings).  Since, in fact, that was already done by
- * CreateSharedMemoryAndSemaphores(), we have nothing more to do here.
- */
-static void
-CheckerModeMain(void)
-{
-	proc_exit(0);
-}
-
-/*
- *	 The main entry point for running the backend in bootstrap mode
+ *	 AuxiliaryProcessMain
  *
- *	 The bootstrap mode is used to initialize the template database.
- *	 The bootstrap backend doesn't speak SQL, but instead expects
- *	 commands in a special bootstrap language.
+ *	 The main entry point for auxiliary processes, such as the bgwriter,
+ *	 walwriter, walreceiver, bootstrapper and the shared memory checker code.
  *
- *	 When check_only is true, startup is done only far enough to verify that
- *	 the current configuration, particularly the passed in options pertaining
- *	 to shared memory sizing, options work (or at least do not cause an error
- *	 up to shared memory creation).
+ *	 This code is here just because of historical reasons.
  */
 void
-BootstrapModeMain(int argc, char *argv[], bool check_only)
+AuxiliaryProcessMain(int argc, char *argv[])
 {
-	int			i;
 	char	   *progname = argv[0];
 	int			flag;
 	char	   *userDoption = NULL;
 
-	Assert(!IsUnderPostmaster);
+	/*
+	 * Initialize process environment (already done if under postmaster, but
+	 * not if standalone).
+	 */
+	if (!IsUnderPostmaster)
+		InitStandaloneProcess(argv[0]);
 
-	InitStandaloneProcess(argv[0]);
+	/*
+	 * process command arguments
+	 */
 
 	/* Set defaults, to be overridden by explicit options below */
-	InitializeGUCOptions();
+	if (!IsUnderPostmaster)
+		InitializeGUCOptions();
 
-	/* an initial --boot or --check should be present */
-	Assert(argc > 1
-		   && (strcmp(argv[1], "--boot") == 0
-			   || strcmp(argv[1], "--check") == 0));
-	argv++;
-	argc--;
+	/* Ignore the initial --boot argument, if present */
+	if (argc > 1 && strcmp(argv[1], "--boot") == 0)
+	{
+		argv++;
+		argc--;
+	}
 
-	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:X:-:")) != -1)
+	/* If no -x argument, we are a CheckerProcess */
+	MyAuxProcType = CheckerProcess;
+
+	while ((flag = getopt(argc, argv, "B:c:d:D:Fkr:x:X:-:")) != -1)
 	{
 		switch (flag)
 		{
@@ -253,6 +258,9 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 			case 'r':
 				strlcpy(OutputFileName, optarg, MAXPGPATH);
 				break;
+			case 'x':
+				MyAuxProcType = atoi(optarg);
+				break;
 			case 'X':
 				{
 					int			WalSegSz = strtoul(optarg, NULL, 0);
@@ -262,7 +270,7 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 								(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
 								 errmsg("-X requires a power of two value between 1 MB and 1 GB")));
 					SetConfigOption("wal_segment_size", optarg, PGC_INTERNAL,
-									PGC_S_DYNAMIC_DEFAULT);
+									PGC_S_OVERRIDE);
 				}
 				break;
 			case 'c':
@@ -306,47 +314,188 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 		proc_exit(1);
 	}
 
-	/* Acquire configuration parameters */
-	if (!SelectConfigFiles(userDoption, progname))
-		proc_exit(1);
+	switch (MyAuxProcType)
+	{
+		case StartupProcess:
+			MyBackendType = B_STARTUP;
+			break;
+		case BgWriterProcess:
+			MyBackendType = B_BG_WRITER;
+			break;
+		case CheckpointerProcess:
+			MyBackendType = B_CHECKPOINTER;
+			break;
+		case WalWriterProcess:
+			MyBackendType = B_WAL_WRITER;
+			break;
+		case WalReceiverProcess:
+			MyBackendType = B_WAL_RECEIVER;
+			break;
+		default:
+			MyBackendType = B_INVALID;
+	}
+	if (IsUnderPostmaster)
+		init_ps_display(NULL);
+
+	/* Acquire configuration parameters, unless inherited from postmaster */
+	if (!IsUnderPostmaster)
+	{
+		if (!SelectConfigFiles(userDoption, progname))
+			proc_exit(1);
+	}
 
 	/*
 	 * Validate we have been given a reasonable-looking DataDir and change
-	 * into it
+	 * into it (if under postmaster, should be done already).
 	 */
-	checkDataDir();
-	ChangeToDataDir();
+	if (!IsUnderPostmaster)
+	{
+		checkDataDir();
+		ChangeToDataDir();
+	}
 
-	CreateDataDirLockFile(false);
+	/* If standalone, create lockfile for data directory */
+	if (!IsUnderPostmaster)
+		CreateDataDirLockFile(false);
 
 	SetProcessingMode(BootstrapProcessing);
 	IgnoreSystemIndexes = true;
 
-	InitializeMaxBackends();
-
-	CreateSharedMemoryAndSemaphores();
-
-	/*
-	 * XXX: It might make sense to move this into its own function at some
-	 * point. Right now it seems like it'd cause more code duplication than
-	 * it's worth.
-	 */
-	if (check_only)
-	{
-		SetProcessingMode(NormalProcessing);
-		CheckerModeMain();
-		abort();
-	}
-
-	/*
-	 * Do backend-like initialization for bootstrap mode
-	 */
-	InitProcess();
+	/* Initialize MaxBackends (if under postmaster, was done already) */
+	if (!IsUnderPostmaster)
+		InitializeMaxBackends();
 
 	BaseInit();
 
-	bootstrap_signals();
-	BootStrapXLOG();
+	/*
+	 * When we are an auxiliary process, we aren't going to do the full
+	 * InitPostgres pushups, but there are a couple of things that need to get
+	 * lit up even in an auxiliary process.
+	 */
+	if (IsUnderPostmaster)
+	{
+		/*
+		 * Create a PGPROC so we can use LWLocks.  In the EXEC_BACKEND case,
+		 * this was already done by SubPostmasterMain().
+		 */
+#ifndef EXEC_BACKEND
+		InitAuxiliaryProcess();
+#endif
+
+		/*
+		 * Assign the ProcSignalSlot for an auxiliary process.  Since it
+		 * doesn't have a BackendId, the slot is statically allocated based on
+		 * the auxiliary process type (MyAuxProcType).  Backends use slots
+		 * indexed in the range from 1 to MaxBackends (inclusive), so we use
+		 * MaxBackends + AuxProcType + 1 as the index of the slot for an
+		 * auxiliary process.
+		 *
+		 * This will need rethinking if we ever want more than one of a
+		 * particular auxiliary process type.
+		 */
+		ProcSignalInit(MaxBackends + MyAuxProcType + 1);
+
+		/* finish setting up bufmgr.c */
+		InitBufferPoolBackend();
+
+		/*
+		 * Auxiliary processes don't run transactions, but they may need a
+		 * resource owner anyway to manage buffer pins acquired outside
+		 * transactions (and, perhaps, other things in future).
+		 */
+		CreateAuxProcessResourceOwner();
+
+		/* Initialize backend status information */
+		pgstat_initialize();
+		pgstat_bestart();
+
+		/* register a before-shutdown callback for LWLock cleanup */
+		before_shmem_exit(ShutdownAuxiliaryProcess, 0);
+	}
+
+	/*
+	 * XLOG operations
+	 */
+	SetProcessingMode(NormalProcessing);
+
+	switch (MyAuxProcType)
+	{
+		case CheckerProcess:
+			/* don't set signals, they're useless here */
+			CheckerModeMain();
+			proc_exit(1);		/* should never return */
+
+		case BootstrapProcess:
+
+			/*
+			 * There was a brief instant during which mode was Normal; this is
+			 * okay.  We need to be in bootstrap mode during BootStrapXLOG for
+			 * the sake of multixact initialization.
+			 */
+			SetProcessingMode(BootstrapProcessing);
+			bootstrap_signals();
+			BootStrapXLOG();
+			BootstrapModeMain();
+			proc_exit(1);		/* should never return */
+
+		case StartupProcess:
+			/* don't set signals, startup process has its own agenda */
+			StartupProcessMain();
+			proc_exit(1);		/* should never return */
+
+		case BgWriterProcess:
+			/* don't set signals, bgwriter has its own agenda */
+			BackgroundWriterMain();
+			proc_exit(1);		/* should never return */
+
+		case CheckpointerProcess:
+			/* don't set signals, checkpointer has its own agenda */
+			CheckpointerMain();
+			proc_exit(1);		/* should never return */
+
+		case WalWriterProcess:
+			/* don't set signals, walwriter has its own agenda */
+			InitXLOGAccess();
+			WalWriterMain();
+			proc_exit(1);		/* should never return */
+
+		case WalReceiverProcess:
+			/* don't set signals, walreceiver has its own agenda */
+			WalReceiverMain();
+			proc_exit(1);		/* should never return */
+
+		default:
+			elog(PANIC, "unrecognized process type: %d", (int) MyAuxProcType);
+			proc_exit(1);
+	}
+}
+
+/*
+ * In shared memory checker mode, all we really want to do is create shared
+ * memory and semaphores (just to prove we can do it with the current GUC
+ * settings).  Since, in fact, that was already done by BaseInit(),
+ * we have nothing more to do here.
+ */
+static void
+CheckerModeMain(void)
+{
+	proc_exit(0);
+}
+
+/*
+ *	 The main entry point for running the backend in bootstrap mode
+ *
+ *	 The bootstrap mode is used to initialize the template database.
+ *	 The bootstrap backend doesn't speak SQL, but instead expects
+ *	 commands in a special bootstrap language.
+ */
+static void
+BootstrapModeMain(void)
+{
+	int			i;
+
+	Assert(!IsUnderPostmaster);
+	Assert(IsBootstrapProcessingMode());
 
 	/*
 	 * To ensure that src/common/link-canary.c is linked into the backend, we
@@ -355,7 +504,12 @@ BootstrapModeMain(int argc, char *argv[], bool check_only)
 	if (pg_link_canary_is_frontend())
 		elog(ERROR, "backend is incorrectly linked to frontend functions");
 
-	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, false, false, NULL);
+	/*
+	 * Do backend-like initialization for bootstrap mode
+	 */
+	InitProcess();
+
+	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
 
 	/* Initialize stuff for bootstrap-file processing */
 	for (i = 0; i < MAXATTR; i++)
@@ -407,6 +561,21 @@ bootstrap_signals(void)
 	pqsignal(SIGQUIT, SIG_DFL);
 }
 
+/*
+ * Begin shutdown of an auxiliary process.  This is approximately the equivalent
+ * of ShutdownPostgres() in postinit.c.  We can't run transactions in an
+ * auxiliary process, so most of the work of AbortTransaction() is not needed,
+ * but we do need to make sure we've released any LWLocks we are holding.
+ * (This is only critical during an error exit.)
+ */
+static void
+ShutdownAuxiliaryProcess(int code, Datum arg)
+{
+	LWLockReleaseAll();
+	ConditionVariableCancelSleep();
+	pgstat_report_wait_end();
+}
+
 /* ----------------------------------------------------------------
  *				MANUAL BACKEND INTERACTIVE INTERFACE COMMANDS
  * ----------------------------------------------------------------
@@ -414,24 +583,46 @@ bootstrap_signals(void)
 
 /* ----------------
  *		boot_openrel
- *
- * Execute BKI OPEN command.
  * ----------------
  */
 void
 boot_openrel(char *relname)
 {
 	int			i;
+	struct typmap **app;
+	Relation	rel;
+	TableScanDesc scan;
+	HeapTuple	tup;
 
 	if (strlen(relname) >= NAMEDATALEN)
 		relname[NAMEDATALEN - 1] = '\0';
 
-	/*
-	 * pg_type must be filled before any OPEN command is executed, hence we
-	 * can now populate Typ if we haven't yet.
-	 */
-	if (Typ == NIL)
-		populate_typ_list();
+	if (Typ == NULL)
+	{
+		/* We can now load the pg_type data */
+		rel = table_open(TypeRelationId, NoLock);
+		scan = table_beginscan_catalog(rel, 0, NULL);
+		i = 0;
+		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+			++i;
+		table_endscan(scan);
+		app = Typ = ALLOC(struct typmap *, i + 1);
+		while (i-- > 0)
+			*app++ = ALLOC(struct typmap, 1);
+		*app = NULL;
+		scan = table_beginscan_catalog(rel, 0, NULL);
+		app = Typ;
+		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		{
+			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+			memcpy((char *) &(*app)->am_typ,
+				   (char *) GETSTRUCT(tup),
+				   sizeof((*app)->am_typ));
+			app++;
+		}
+		table_endscan(scan);
+		table_close(rel, NoLock);
+	}
 
 	if (boot_reldesc != NULL)
 		closerel(NULL);
@@ -521,14 +712,13 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 
 	typeoid = gettype(type);
 
-	if (Typ != NIL)
+	if (Typ != NULL)
 	{
 		attrtypes[attnum]->atttypid = Ap->am_oid;
 		attrtypes[attnum]->attlen = Ap->am_typ.typlen;
 		attrtypes[attnum]->attbyval = Ap->am_typ.typbyval;
-		attrtypes[attnum]->attalign = Ap->am_typ.typalign;
 		attrtypes[attnum]->attstorage = Ap->am_typ.typstorage;
-		attrtypes[attnum]->attcompression = InvalidCompressionMethod;
+		attrtypes[attnum]->attalign = Ap->am_typ.typalign;
 		attrtypes[attnum]->attcollation = Ap->am_typ.typcollation;
 		/* if an array type, assume 1-dimensional attribute */
 		if (Ap->am_typ.typelem != InvalidOid && Ap->am_typ.typlen < 0)
@@ -541,9 +731,8 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 		attrtypes[attnum]->atttypid = TypInfo[typeoid].oid;
 		attrtypes[attnum]->attlen = TypInfo[typeoid].len;
 		attrtypes[attnum]->attbyval = TypInfo[typeoid].byval;
-		attrtypes[attnum]->attalign = TypInfo[typeoid].align;
 		attrtypes[attnum]->attstorage = TypInfo[typeoid].storage;
-		attrtypes[attnum]->attcompression = InvalidCompressionMethod;
+		attrtypes[attnum]->attalign = TypInfo[typeoid].align;
 		attrtypes[attnum]->attcollation = TypInfo[typeoid].collation;
 		/* if an array type, assume 1-dimensional attribute */
 		if (TypInfo[typeoid].elem != InvalidOid &&
@@ -581,18 +770,25 @@ DefineAttr(char *name, char *type, int attnum, int nullness)
 
 		/*
 		 * Mark as "not null" if type is fixed-width and prior columns are
-		 * likewise fixed-width and not-null.  This corresponds to case where
-		 * column can be accessed directly via C struct declaration.
+		 * too.  This corresponds to case where column can be accessed
+		 * directly via C struct declaration.
+		 *
+		 * oidvector and int2vector are also treated as not-nullable, even
+		 * though they are no longer fixed-width.
 		 */
-		if (attrtypes[attnum]->attlen > 0)
+#define MARKNOTNULL(att) \
+		((att)->attlen > 0 || \
+		 (att)->atttypid == OIDVECTOROID || \
+		 (att)->atttypid == INT2VECTOROID)
+
+		if (MARKNOTNULL(attrtypes[attnum]))
 		{
 			int			i;
 
 			/* check earlier attributes */
 			for (i = 0; i < attnum; i++)
 			{
-				if (attrtypes[i]->attlen <= 0 ||
-					!attrtypes[i]->attnotnull)
+				if (!attrtypes[i]->attnotnull)
 					break;
 			}
 			if (i == attnum)
@@ -701,105 +897,65 @@ cleanup(void)
 }
 
 /* ----------------
- *		populate_typ_list
- *
- * Load the Typ list by reading pg_type.
- * ----------------
- */
-static void
-populate_typ_list(void)
-{
-	Relation	rel;
-	TableScanDesc scan;
-	HeapTuple	tup;
-	MemoryContext old;
-
-	Assert(Typ == NIL);
-
-	rel = table_open(TypeRelationId, NoLock);
-	scan = table_beginscan_catalog(rel, 0, NULL);
-	old = MemoryContextSwitchTo(TopMemoryContext);
-	while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
-	{
-		Form_pg_type typForm = (Form_pg_type) GETSTRUCT(tup);
-		struct typmap *newtyp;
-
-		newtyp = (struct typmap *) palloc(sizeof(struct typmap));
-		Typ = lappend(Typ, newtyp);
-
-		newtyp->am_oid = typForm->oid;
-		memcpy(&newtyp->am_typ, typForm, sizeof(newtyp->am_typ));
-	}
-	MemoryContextSwitchTo(old);
-	table_endscan(scan);
-	table_close(rel, NoLock);
-}
-
-/* ----------------
  *		gettype
  *
  * NB: this is really ugly; it will return an integer index into TypInfo[],
  * and not an OID at all, until the first reference to a type not known in
- * TypInfo[].  At that point it will read and cache pg_type in Typ,
+ * TypInfo[].  At that point it will read and cache pg_type in the Typ array,
  * and subsequently return a real OID (and set the global pointer Ap to
  * point at the found row in Typ).  So caller must check whether Typ is
- * still NIL to determine what the return value is!
+ * still NULL to determine what the return value is!
  * ----------------
  */
 static Oid
 gettype(char *type)
 {
-	if (Typ != NIL)
+	int			i;
+	Relation	rel;
+	TableScanDesc scan;
+	HeapTuple	tup;
+	struct typmap **app;
+
+	if (Typ != NULL)
 	{
-		ListCell   *lc;
-
-		foreach(lc, Typ)
+		for (app = Typ; *app != NULL; app++)
 		{
-			struct typmap *app = lfirst(lc);
-
-			if (strncmp(NameStr(app->am_typ.typname), type, NAMEDATALEN) == 0)
+			if (strncmp(NameStr((*app)->am_typ.typname), type, NAMEDATALEN) == 0)
 			{
-				Ap = app;
-				return app->am_oid;
-			}
-		}
-
-		/*
-		 * The type wasn't known; reload the pg_type contents and check again
-		 * to handle composite types, added since last populating the list.
-		 */
-
-		list_free_deep(Typ);
-		Typ = NIL;
-		populate_typ_list();
-
-		/*
-		 * Calling gettype would result in infinite recursion for types
-		 * missing in pg_type, so just repeat the lookup.
-		 */
-		foreach(lc, Typ)
-		{
-			struct typmap *app = lfirst(lc);
-
-			if (strncmp(NameStr(app->am_typ.typname), type, NAMEDATALEN) == 0)
-			{
-				Ap = app;
-				return app->am_oid;
+				Ap = *app;
+				return (*app)->am_oid;
 			}
 		}
 	}
 	else
 	{
-		int			i;
-
 		for (i = 0; i < n_types; i++)
 		{
 			if (strncmp(type, TypInfo[i].name, NAMEDATALEN) == 0)
 				return i;
 		}
-		/* Not in TypInfo, so we'd better be able to read pg_type now */
 		elog(DEBUG4, "external type: %s", type);
-		populate_typ_list();
+		rel = table_open(TypeRelationId, NoLock);
+		scan = table_beginscan_catalog(rel, 0, NULL);
+		i = 0;
+		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+			++i;
+		table_endscan(scan);
+		app = Typ = ALLOC(struct typmap *, i + 1);
+		while (i-- > 0)
+			*app++ = ALLOC(struct typmap, 1);
+		*app = NULL;
+		scan = table_beginscan_catalog(rel, 0, NULL);
+		app = Typ;
+		while ((tup = heap_getnext(scan, ForwardScanDirection)) != NULL)
+		{
+			(*app)->am_oid = ((Form_pg_type) GETSTRUCT(tup))->oid;
+			memmove((char *) &(*app++)->am_typ,
+					(char *) GETSTRUCT(tup),
+					sizeof((*app)->am_typ));
+		}
+		table_endscan(scan);
+		table_close(rel, NoLock);
 		return gettype(type);
 	}
 	elog(ERROR, "unrecognized type \"%s\"", type);
@@ -827,20 +983,17 @@ boot_get_type_io_data(Oid typid,
 					  Oid *typinput,
 					  Oid *typoutput)
 {
-	if (Typ != NIL)
+	if (Typ != NULL)
 	{
 		/* We have the boot-time contents of pg_type, so use it */
-		struct typmap *ap = NULL;
-		ListCell   *lc;
+		struct typmap **app;
+		struct typmap *ap;
 
-		foreach(lc, Typ)
-		{
-			ap = lfirst(lc);
-			if (ap->am_oid == typid)
-				break;
-		}
-
-		if (!ap || ap->am_oid != typid)
+		app = Typ;
+		while (*app && (*app)->am_oid != typid)
+			++app;
+		ap = *app;
+		if (ap == NULL)
 			elog(ERROR, "type OID %u not found in Typ list", typid);
 
 		*typlen = ap->am_typ.typlen;

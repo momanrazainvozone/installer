@@ -3,7 +3,7 @@
  * joinrels.c
  *	  Routines to determine which relations should be joined
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -1279,7 +1279,7 @@ mark_dummy_rel(RelOptInfo *rel)
 	/* Set up the dummy path */
 	add_path(rel, (Path *) create_append_path(NULL, rel, NIL, NIL,
 											  NIL, rel->lateral_relids,
-											  0, false, -1));
+											  0, false, NIL, -1));
 
 	/* Set or update cheapest_total_path and related fields */
 	set_cheapest(rel);
@@ -1539,7 +1539,6 @@ try_partitionwise_join(PlannerInfo *root, RelOptInfo *rel1, RelOptInfo *rel2,
 												 child_sjinfo,
 												 child_sjinfo->jointype);
 			joinrel->part_rels[cnt_parts] = child_joinrel;
-			joinrel->live_parts = bms_add_member(joinrel->live_parts, cnt_parts);
 			joinrel->all_partrels = bms_add_members(joinrel->all_partrels,
 													child_joinrel->relids);
 		}

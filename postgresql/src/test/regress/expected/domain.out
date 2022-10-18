@@ -70,16 +70,22 @@ from basictest;
 (3 rows)
 
 -- check that union/case/coalesce type resolution handles domains properly
-select pg_typeof(coalesce(4::domainint4, 7));
- pg_typeof 
------------
- integer
+select coalesce(4::domainint4, 7) is of (int4) as t;
+ t 
+---
+ t
 (1 row)
 
-select pg_typeof(coalesce(4::domainint4, 7::domainint4));
- pg_typeof  
-------------
- domainint4
+select coalesce(4::domainint4, 7) is of (domainint4) as f;
+ f 
+---
+ f
+(1 row)
+
+select coalesce(4::domainint4, 7::domainint4) is of (domainint4) as t;
+ t 
+---
+ t
 (1 row)
 
 drop table basictest;
@@ -870,7 +876,7 @@ begin
 end$$ language plpgsql;
 select doubledecrement(3); -- fail because of implicit null assignment
 ERROR:  domain pos_int does not allow null values
-CONTEXT:  PL/pgSQL function doubledecrement(pos_int) line 2 during statement block local variable initialization
+CONTEXT:  PL/pgSQL function doubledecrement(pos_int) line 3 during statement block local variable initialization
 create or replace function doubledecrement(p1 pos_int) returns pos_int as $$
 declare v pos_int := 0;
 begin
@@ -878,7 +884,7 @@ begin
 end$$ language plpgsql;
 select doubledecrement(3); -- fail at initialization assignment
 ERROR:  value for domain pos_int violates check constraint "pos_int_check"
-CONTEXT:  PL/pgSQL function doubledecrement(pos_int) line 2 during statement block local variable initialization
+CONTEXT:  PL/pgSQL function doubledecrement(pos_int) line 3 during statement block local variable initialization
 create or replace function doubledecrement(p1 pos_int) returns pos_int as $$
 declare v pos_int := 1;
 begin

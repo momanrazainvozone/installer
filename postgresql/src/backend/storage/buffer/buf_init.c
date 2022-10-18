@@ -3,7 +3,7 @@
  * buf_init.c
  *	  buffer manager initialization routines
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,11 +16,10 @@
 
 #include "storage/buf_internals.h"
 #include "storage/bufmgr.h"
-#include "storage/proc.h"
 
 BufferDescPadded *BufferDescriptors;
 char	   *BufferBlocks;
-ConditionVariableMinimallyPadded *BufferIOCVArray;
+LWLockMinimallyPadded *BufferIOLWLockArray = NULL;
 WritebackContext BackendWritebackContext;
 CkptSortItem *CkptBufferIds;
 
@@ -69,7 +68,7 @@ InitBufferPool(void)
 {
 	bool		foundBufs,
 				foundDescs,
-				foundIOCV,
+				foundIOLocks,
 				foundBufCkpt;
 
 	/* Align descriptors to a cacheline boundary. */
@@ -82,11 +81,11 @@ InitBufferPool(void)
 		ShmemInitStruct("Buffer Blocks",
 						NBuffers * (Size) BLCKSZ, &foundBufs);
 
-	/* Align condition variables to cacheline boundary. */
-	BufferIOCVArray = (ConditionVariableMinimallyPadded *)
-		ShmemInitStruct("Buffer IO Condition Variables",
-						NBuffers * sizeof(ConditionVariableMinimallyPadded),
-						&foundIOCV);
+	/* Align lwlocks to cacheline boundary */
+	BufferIOLWLockArray = (LWLockMinimallyPadded *)
+		ShmemInitStruct("Buffer IO Locks",
+						NBuffers * (Size) sizeof(LWLockMinimallyPadded),
+						&foundIOLocks);
 
 	/*
 	 * The array used to sort to-be-checkpointed buffer ids is located in
@@ -99,10 +98,10 @@ InitBufferPool(void)
 		ShmemInitStruct("Checkpoint BufferIds",
 						NBuffers * sizeof(CkptSortItem), &foundBufCkpt);
 
-	if (foundDescs || foundBufs || foundIOCV || foundBufCkpt)
+	if (foundDescs || foundBufs || foundIOLocks || foundBufCkpt)
 	{
 		/* should find all of these, or none of them */
-		Assert(foundDescs && foundBufs && foundIOCV && foundBufCkpt);
+		Assert(foundDescs && foundBufs && foundIOLocks && foundBufCkpt);
 		/* note: this path is only taken in EXEC_BACKEND case */
 	}
 	else
@@ -119,7 +118,7 @@ InitBufferPool(void)
 			CLEAR_BUFFERTAG(buf->tag);
 
 			pg_atomic_init_u32(&buf->state, 0);
-			buf->wait_backend_pgprocno = INVALID_PGPROCNO;
+			buf->wait_backend_pid = 0;
 
 			buf->buf_id = i;
 
@@ -132,7 +131,8 @@ InitBufferPool(void)
 			LWLockInitialize(BufferDescriptorGetContentLock(buf),
 							 LWTRANCHE_BUFFER_CONTENT);
 
-			ConditionVariableInit(BufferDescriptorGetIOCV(buf));
+			LWLockInitialize(BufferDescriptorGetIOLock(buf),
+							 LWTRANCHE_BUFFER_IO);
 		}
 
 		/* Correct last entry of linked list */
@@ -169,9 +169,16 @@ BufferShmemSize(void)
 	/* size of stuff controlled by freelist.c */
 	size = add_size(size, StrategyShmemSize());
 
-	/* size of I/O condition variables */
-	size = add_size(size, mul_size(NBuffers,
-								   sizeof(ConditionVariableMinimallyPadded)));
+	/*
+	 * It would be nice to include the I/O locks in the BufferDesc, but that
+	 * would increase the size of a BufferDesc to more than one cache line,
+	 * and benchmarking has shown that keeping every BufferDesc aligned on a
+	 * cache line boundary is important for performance.  So, instead, the
+	 * array of I/O locks is allocated in a separate tranche.  Because those
+	 * locks are not highly contended, we lay out the array with minimal
+	 * padding.
+	 */
+	size = add_size(size, mul_size(NBuffers, sizeof(LWLockMinimallyPadded)));
 	/* to allow aligning the above */
 	size = add_size(size, PG_CACHE_LINE_SIZE);
 

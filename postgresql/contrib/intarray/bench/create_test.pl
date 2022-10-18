@@ -1,7 +1,5 @@
 #!/usr/bin/perl
 
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # contrib/intarray/bench/create_test.pl
 
 use strict;
@@ -51,7 +49,7 @@ foreach my $i (1 .. 200000)
 	else
 	{
 		print $msg "$i\t{" . join(',', @sect) . "}\n";
-		print $map "$i\t$_\n" foreach @sect;
+		map { print $map "$i\t$_\n" } @sect;
 	}
 }
 close $map;

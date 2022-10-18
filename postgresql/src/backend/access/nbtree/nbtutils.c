@@ -3,7 +3,7 @@
  * nbtutils.c
  *	  Utility code for Postgres btree implementation.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -164,13 +164,6 @@ _bt_mkscankey(Relation rel, IndexTuple itup)
 		if (null)
 			key->anynullkeys = true;
 	}
-
-	/*
-	 * In NULLS NOT DISTINCT mode, we pretend that there are no null keys, so
-	 * that full uniqueness check is done.
-	 */
-	if (rel->rd_index->indnullsnotdistinct)
-		key->anynullkeys = false;
 
 	return key;
 }
@@ -1751,7 +1744,7 @@ _bt_killitems(IndexScanDesc scan)
 		 * LSN.
 		 */
 		droppedpin = false;
-		_bt_lockbuf(scan->indexRelation, so->currPos.buf, BT_READ);
+		LockBuffer(so->currPos.buf, BT_READ);
 
 		page = BufferGetPage(so->currPos.buf);
 	}
@@ -1774,7 +1767,7 @@ _bt_killitems(IndexScanDesc scan)
 		}
 	}
 
-	opaque = BTPageGetOpaque(page);
+	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	minoff = P_FIRSTDATAKEY(opaque);
 	maxoff = PageGetMaxOffsetNumber(page);
 
@@ -1884,8 +1877,7 @@ _bt_killitems(IndexScanDesc scan)
 	 * Since this can be redone later if needed, mark as dirty hint.
 	 *
 	 * Whenever we mark anything LP_DEAD, we also set the page's
-	 * BTP_HAS_GARBAGE flag, which is likewise just a hint.  (Note that we
-	 * only rely on the page-level flag in !heapkeyspace indexes.)
+	 * BTP_HAS_GARBAGE flag, which is likewise just a hint.
 	 */
 	if (killedsomething)
 	{
@@ -1893,7 +1885,7 @@ _bt_killitems(IndexScanDesc scan)
 		MarkBufferDirtyHint(so->currPos.buf, true);
 	}
 
-	_bt_unlockbuf(scan->indexRelation, so->currPos.buf);
+	LockBuffer(so->currPos.buf, BUFFER_LOCK_UNLOCK);
 }
 
 
@@ -2116,12 +2108,14 @@ btoptions(Datum reloptions, bool validate)
 		offsetof(BTOptions, vacuum_cleanup_index_scale_factor)},
 		{"deduplicate_items", RELOPT_TYPE_BOOL,
 		offsetof(BTOptions, deduplicate_items)}
+
 	};
 
 	return (bytea *) build_reloptions(reloptions, validate,
 									  RELOPT_KIND_BTREE,
 									  sizeof(BTOptions),
 									  tab, lengthof(tab));
+
 }
 
 /*
@@ -2472,7 +2466,7 @@ _bt_check_natts(Relation rel, bool heapkeyspace, Page page, OffsetNumber offnum)
 {
 	int16		natts = IndexRelationGetNumberOfAttributes(rel);
 	int16		nkeyatts = IndexRelationGetNumberOfKeyAttributes(rel);
-	BTPageOpaque opaque = BTPageGetOpaque(page);
+	BTPageOpaque opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	IndexTuple	itup;
 	int			tupnatts;
 
@@ -2589,6 +2583,7 @@ _bt_check_natts(Relation rel, bool heapkeyspace, Page page, OffsetNumber offnum)
 
 			/* Use generic heapkeyspace pivot tuple handling */
 		}
+
 	}
 
 	/* Handle heapkeyspace pivot tuples (excluding minus infinity items) */
@@ -2659,7 +2654,7 @@ _bt_check_third_page(Relation rel, Relation heap, bool needheaptidspace,
 	 * Internal page insertions cannot fail here, because that would mean that
 	 * an earlier leaf level insertion that should have failed didn't
 	 */
-	opaque = BTPageGetOpaque(page);
+	opaque = (BTPageOpaque) PageGetSpecialPointer(page);
 	if (!P_ISLEAF(opaque))
 		elog(ERROR, "cannot insert oversized tuple of size %zu on internal page of index \"%s\"",
 			 itemsz, RelationGetRelationName(rel));
@@ -2697,9 +2692,21 @@ _bt_allequalimage(Relation rel, bool debugmessage)
 {
 	bool		allequalimage = true;
 
-	/* INCLUDE indexes can never support deduplication */
+	/* INCLUDE indexes don't support deduplication */
 	if (IndexRelationGetNumberOfAttributes(rel) !=
 		IndexRelationGetNumberOfKeyAttributes(rel))
+		return false;
+
+	/*
+	 * There is no special reason why deduplication cannot work with system
+	 * relations (i.e. with system catalog indexes and TOAST indexes).  We
+	 * deem deduplication unsafe for these indexes all the same, since the
+	 * alternative is to force users to always use deduplication, without
+	 * being able to opt out.  (ALTER INDEX is not supported with system
+	 * indexes, so users would have no way to set the deduplicate_items
+	 * storage parameter to 'off'.)
+	 */
+	if (IsSystemRelation(rel))
 		return false;
 
 	for (int i = 0; i < IndexRelationGetNumberOfKeyAttributes(rel); i++)
@@ -2725,6 +2732,10 @@ _bt_allequalimage(Relation rel, bool debugmessage)
 		}
 	}
 
+	/*
+	 * Don't elog() until here to avoid reporting on a system relation index
+	 * or an INCLUDE index
+	 */
 	if (debugmessage)
 	{
 		if (allequalimage)

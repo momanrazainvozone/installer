@@ -178,7 +178,8 @@ encrypt_init(PushFilter *next, void *init_arg, void **priv_p)
 	if (res < 0)
 		return res;
 
-	st = palloc0(sizeof(*st));
+	st = px_alloc(sizeof(*st));
+	memset(st, 0, sizeof(*st));
 	st->ciph = ciph;
 
 	*priv_p = st;
@@ -218,7 +219,7 @@ encrypt_free(void *priv)
 	if (st->ciph)
 		pgp_cfb_free(st->ciph);
 	px_memset(st, 0, sizeof(*st));
-	pfree(st);
+	px_free(st);
 }
 
 static const PushFilterOps encrypt_filter = {
@@ -240,7 +241,7 @@ pkt_stream_init(PushFilter *next, void *init_arg, void **priv_p)
 {
 	struct PktStreamStat *st;
 
-	st = palloc(sizeof(*st));
+	st = px_alloc(sizeof(*st));
 	st->final_done = 0;
 	st->pkt_block = 1 << STREAM_BLOCK_SHIFT;
 	*priv_p = st;
@@ -300,7 +301,7 @@ pkt_stream_free(void *priv)
 	struct PktStreamStat *st = priv;
 
 	px_memset(st, 0, sizeof(*st));
-	pfree(st);
+	px_free(st);
 }
 
 static const PushFilterOps pkt_stream_filter = {

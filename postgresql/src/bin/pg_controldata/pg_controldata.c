@@ -134,8 +134,7 @@ main(int argc, char *argv[])
 				break;
 
 			default:
-				/* getopt_long already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(1);
 		}
 	}
@@ -153,14 +152,15 @@ main(int argc, char *argv[])
 	{
 		pg_log_error("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
 		exit(1);
 	}
 
 	if (DataDir == NULL)
 	{
 		pg_log_error("no data directory specified");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 		exit(1);
 	}
 
@@ -236,9 +236,11 @@ main(int argc, char *argv[])
 	printf(_("pg_control last modified:             %s\n"),
 		   pgctime_str);
 	printf(_("Latest checkpoint location:           %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->checkPoint));
+		   (uint32) (ControlFile->checkPoint >> 32),
+		   (uint32) ControlFile->checkPoint);
 	printf(_("Latest checkpoint's REDO location:    %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->checkPointCopy.redo));
+		   (uint32) (ControlFile->checkPointCopy.redo >> 32),
+		   (uint32) ControlFile->checkPointCopy.redo);
 	printf(_("Latest checkpoint's REDO WAL file:    %s\n"),
 		   xlogfilename);
 	printf(_("Latest checkpoint's TimeLineID:       %u\n"),
@@ -248,8 +250,8 @@ main(int argc, char *argv[])
 	printf(_("Latest checkpoint's full_page_writes: %s\n"),
 		   ControlFile->checkPointCopy.fullPageWrites ? _("on") : _("off"));
 	printf(_("Latest checkpoint's NextXID:          %u:%u\n"),
-		   EpochFromFullTransactionId(ControlFile->checkPointCopy.nextXid),
-		   XidFromFullTransactionId(ControlFile->checkPointCopy.nextXid));
+		   EpochFromFullTransactionId(ControlFile->checkPointCopy.nextFullXid),
+		   XidFromFullTransactionId(ControlFile->checkPointCopy.nextFullXid));
 	printf(_("Latest checkpoint's NextOID:          %u\n"),
 		   ControlFile->checkPointCopy.nextOid);
 	printf(_("Latest checkpoint's NextMultiXactId:  %u\n"),
@@ -273,15 +275,19 @@ main(int argc, char *argv[])
 	printf(_("Time of latest checkpoint:            %s\n"),
 		   ckpttime_str);
 	printf(_("Fake LSN counter for unlogged rels:   %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->unloggedLSN));
+		   (uint32) (ControlFile->unloggedLSN >> 32),
+		   (uint32) ControlFile->unloggedLSN);
 	printf(_("Minimum recovery ending location:     %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->minRecoveryPoint));
+		   (uint32) (ControlFile->minRecoveryPoint >> 32),
+		   (uint32) ControlFile->minRecoveryPoint);
 	printf(_("Min recovery ending loc's timeline:   %u\n"),
 		   ControlFile->minRecoveryPointTLI);
 	printf(_("Backup start location:                %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->backupStartPoint));
+		   (uint32) (ControlFile->backupStartPoint >> 32),
+		   (uint32) ControlFile->backupStartPoint);
 	printf(_("Backup end location:                  %X/%X\n"),
-		   LSN_FORMAT_ARGS(ControlFile->backupEndPoint));
+		   (uint32) (ControlFile->backupEndPoint >> 32),
+		   (uint32) ControlFile->backupEndPoint);
 	printf(_("End-of-backup record required:        %s\n"),
 		   ControlFile->backupEndRequired ? _("yes") : _("no"));
 	printf(_("wal_level setting:                    %s\n"),

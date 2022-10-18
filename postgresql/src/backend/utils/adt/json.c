@@ -3,7 +3,7 @@
  * json.c
  *		JSON data type support.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -458,7 +458,7 @@ JsonEncodeDateTime(char *buf, Datum value, Oid typid, const int *tzp)
 			}
 			break;
 		default:
-			elog(ERROR, "unknown jsonb value datetime type oid %u", typid);
+			elog(ERROR, "unknown jsonb value datetime type oid %d", typid);
 			return NULL;
 	}
 
@@ -990,7 +990,7 @@ catenate_stringinfo_string(StringInfo buffer, const char *addon)
 Datum
 json_build_object(PG_FUNCTION_ARGS)
 {
-	int			nargs;
+	int			nargs = PG_NARGS();
 	int			i;
 	const char *sep = "";
 	StringInfo	result;
@@ -1183,6 +1183,7 @@ json_object(PG_FUNCTION_ARGS)
 	pfree(result.data);
 
 	PG_RETURN_TEXT_P(rval);
+
 }
 
 /*

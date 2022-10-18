@@ -24,8 +24,6 @@ OBJS = \
 	reloptions.o \
 	scankey.o \
 	session.o \
-	syncscan.o \
-	toast_compression.o \
 	toast_internals.o \
 	tupconvert.o \
 	tupdesc.o

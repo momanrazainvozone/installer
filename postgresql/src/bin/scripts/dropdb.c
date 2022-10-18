@@ -2,7 +2,7 @@
  *
  * dropdb
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/scripts/dropdb.c
@@ -13,7 +13,6 @@
 #include "postgres_fe.h"
 #include "common.h"
 #include "common/logging.h"
-#include "fe_utils/option_utils.h"
 #include "fe_utils/string_utils.h"
 
 
@@ -100,8 +99,7 @@ main(int argc, char *argv[])
 				maintenance_db = pg_strdup(optarg);
 				break;
 			default:
-				/* getopt_long already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 				exit(1);
 		}
 	}
@@ -110,7 +108,7 @@ main(int argc, char *argv[])
 	{
 		case 0:
 			pg_log_error("missing required argument database name");
-			pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+			fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 			exit(1);
 		case 1:
 			dbname = argv[optind];
@@ -118,7 +116,7 @@ main(int argc, char *argv[])
 		default:
 			pg_log_error("too many command-line arguments (first is \"%s\")",
 						 argv[optind + 1]);
-			pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+			fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 			exit(1);
 	}
 

@@ -194,14 +194,89 @@ prefixes(struct vars *v)
 }
 
 /*
+ * lexnest - "call a subroutine", interpolating string at the lexical level
+ *
+ * Note, this is not a very general facility.  There are a number of
+ * implicit assumptions about what sorts of strings can be subroutines.
+ */
+static void
+lexnest(struct vars *v,
+		const chr *beginp,		/* start of interpolation */
+		const chr *endp)		/* one past end of interpolation */
+{
+	assert(v->savenow == NULL); /* only one level of nesting */
+	v->savenow = v->now;
+	v->savestop = v->stop;
+	v->now = beginp;
+	v->stop = endp;
+}
+
+/*
+ * string constants to interpolate as expansions of things like \d
+ */
+static const chr backd[] = {	/* \d */
+	CHR('['), CHR('['), CHR(':'),
+	CHR('d'), CHR('i'), CHR('g'), CHR('i'), CHR('t'),
+	CHR(':'), CHR(']'), CHR(']')
+};
+static const chr backD[] = {	/* \D */
+	CHR('['), CHR('^'), CHR('['), CHR(':'),
+	CHR('d'), CHR('i'), CHR('g'), CHR('i'), CHR('t'),
+	CHR(':'), CHR(']'), CHR(']')
+};
+static const chr brbackd[] = {	/* \d within brackets */
+	CHR('['), CHR(':'),
+	CHR('d'), CHR('i'), CHR('g'), CHR('i'), CHR('t'),
+	CHR(':'), CHR(']')
+};
+static const chr backs[] = {	/* \s */
+	CHR('['), CHR('['), CHR(':'),
+	CHR('s'), CHR('p'), CHR('a'), CHR('c'), CHR('e'),
+	CHR(':'), CHR(']'), CHR(']')
+};
+static const chr backS[] = {	/* \S */
+	CHR('['), CHR('^'), CHR('['), CHR(':'),
+	CHR('s'), CHR('p'), CHR('a'), CHR('c'), CHR('e'),
+	CHR(':'), CHR(']'), CHR(']')
+};
+static const chr brbacks[] = {	/* \s within brackets */
+	CHR('['), CHR(':'),
+	CHR('s'), CHR('p'), CHR('a'), CHR('c'), CHR('e'),
+	CHR(':'), CHR(']')
+};
+static const chr backw[] = {	/* \w */
+	CHR('['), CHR('['), CHR(':'),
+	CHR('a'), CHR('l'), CHR('n'), CHR('u'), CHR('m'),
+	CHR(':'), CHR(']'), CHR('_'), CHR(']')
+};
+static const chr backW[] = {	/* \W */
+	CHR('['), CHR('^'), CHR('['), CHR(':'),
+	CHR('a'), CHR('l'), CHR('n'), CHR('u'), CHR('m'),
+	CHR(':'), CHR(']'), CHR('_'), CHR(']')
+};
+static const chr brbackw[] = {	/* \w within brackets */
+	CHR('['), CHR(':'),
+	CHR('a'), CHR('l'), CHR('n'), CHR('u'), CHR('m'),
+	CHR(':'), CHR(']'), CHR('_')
+};
+
+/*
+ * lexword - interpolate a bracket expression for word characters
+ * Possibly ought to inquire whether there is a "word" character class.
+ */
+static void
+lexword(struct vars *v)
+{
+	lexnest(v, backw, ENDOF(backw));
+}
+
+/*
  * next - get next token
  */
 static int						/* 1 normal, 0 failure */
 next(struct vars *v)
 {
 	chr			c;
-
-next_restart:					/* loop here after eating a comment */
 
 	/* errors yield an infinite sequence of failures */
 	if (ISERR())
@@ -215,6 +290,14 @@ next_restart:					/* loop here after eating a comment */
 	{
 		/* at start of a REG_BOSONLY RE */
 		RETV(SBEGIN, 0);		/* same as \A */
+	}
+
+	/* if we're nested and we've hit end, return to outer level */
+	if (v->savenow != NULL && ATEOS())
+	{
+		v->now = v->savenow;
+		v->stop = v->savestop;
+		v->savenow = v->savestop = NULL;
 	}
 
 	/* skip white space etc. if appropriate (not in literal or []) */
@@ -337,14 +420,31 @@ next_restart:					/* loop here after eating a comment */
 					NOTE(REG_UNONPOSIX);
 					if (ATEOS())
 						FAILW(REG_EESCAPE);
-					if (!lexescape(v))
-						return 0;
+					(DISCARD) lexescape(v);
 					switch (v->nexttype)
 					{			/* not all escapes okay here */
 						case PLAIN:
-						case CCLASSS:
-						case CCLASSC:
 							return 1;
+							break;
+						case CCLASS:
+							switch (v->nextvalue)
+							{
+								case 'd':
+									lexnest(v, brbackd, ENDOF(brbackd));
+									break;
+								case 's':
+									lexnest(v, brbacks, ENDOF(brbacks));
+									break;
+								case 'w':
+									lexnest(v, brbackw, ENDOF(brbackw));
+									break;
+								default:
+									FAILW(REG_EESCAPE);
+									break;
+							}
+							/* lexnest done, back up and try again */
+							v->nexttype = v->lasttype;
+							return next(v);
 							break;
 					}
 					/* not one of the acceptable escapes */
@@ -495,7 +595,8 @@ next_restart:					/* loop here after eating a comment */
 						if (!ATEOS())
 							v->now++;
 						assert(v->nexttype == v->lasttype);
-						goto next_restart;
+						return next(v);
+						break;
 					case CHR('='):	/* positive lookahead */
 						NOTE(REG_ULOOKAROUND);
 						RETV(LACON, LATYPE_AHEAD_POS);
@@ -529,7 +630,10 @@ next_restart:					/* loop here after eating a comment */
 				}
 				assert(NOTREACHED);
 			}
-			RETV('(', 1);
+			if (v->cflags & REG_NOSUB)
+				RETV('(', 0);	/* all parens non-capturing */
+			else
+				RETV('(', 1);
 			break;
 		case CHR(')'):
 			if (LASTTYPE('('))
@@ -587,17 +691,49 @@ next_restart:					/* loop here after eating a comment */
 		}
 		RETV(PLAIN, *v->now++);
 	}
-	return lexescape(v);
+	(DISCARD) lexescape(v);
+	if (ISERR())
+		FAILW(REG_EESCAPE);
+	if (v->nexttype == CCLASS)
+	{							/* fudge at lexical level */
+		switch (v->nextvalue)
+		{
+			case 'd':
+				lexnest(v, backd, ENDOF(backd));
+				break;
+			case 'D':
+				lexnest(v, backD, ENDOF(backD));
+				break;
+			case 's':
+				lexnest(v, backs, ENDOF(backs));
+				break;
+			case 'S':
+				lexnest(v, backS, ENDOF(backS));
+				break;
+			case 'w':
+				lexnest(v, backw, ENDOF(backw));
+				break;
+			case 'W':
+				lexnest(v, backW, ENDOF(backW));
+				break;
+			default:
+				assert(NOTREACHED);
+				FAILW(REG_ASSERT);
+				break;
+		}
+		/* lexnest done, back up and try again */
+		v->nexttype = v->lasttype;
+		return next(v);
+	}
+	/* otherwise, lexescape has already done the work */
+	return !ISERR();
 }
 
 /*
  * lexescape - parse an ARE backslash escape (backslash already eaten)
- *
- * This is used for ARE backslashes both normally and inside bracket
- * expressions.  In the latter case, not all escape types are allowed,
- * but the caller must reject unwanted ones after we return.
+ * Note slightly nonstandard use of the CCLASS type code.
  */
-static int
+static int						/* not actually used, but convenient for RETV */
 lexescape(struct vars *v)
 {
 	chr			c;
@@ -639,11 +775,11 @@ lexescape(struct vars *v)
 			break;
 		case CHR('d'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSS, CC_DIGIT);
+			RETV(CCLASS, 'd');
 			break;
 		case CHR('D'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSC, CC_DIGIT);
+			RETV(CCLASS, 'D');
 			break;
 		case CHR('e'):
 			NOTE(REG_UUNPORT);
@@ -666,11 +802,11 @@ lexescape(struct vars *v)
 			break;
 		case CHR('s'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSS, CC_SPACE);
+			RETV(CCLASS, 's');
 			break;
 		case CHR('S'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSC, CC_SPACE);
+			RETV(CCLASS, 'S');
 			break;
 		case CHR('t'):
 			RETV(PLAIN, CHR('\t'));
@@ -692,11 +828,11 @@ lexescape(struct vars *v)
 			break;
 		case CHR('w'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSS, CC_WORD);
+			RETV(CCLASS, 'w');
 			break;
 		case CHR('W'):
 			NOTE(REG_ULOCALE);
-			RETV(CCLASSC, CC_WORD);
+			RETV(CCLASS, 'W');
 			break;
 		case CHR('x'):
 			NOTE(REG_UUNPORT);

@@ -4,7 +4,7 @@
  *	  support for communication destinations
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -226,8 +226,13 @@ EndReplicationCommand(const char *commandTag)
 /* ----------------
  *		NullCommand - tell dest that an empty query string was recognized
  *
- *		This ensures that there will be a recognizable end to the response
- *		to an Execute message in the extended query protocol.
+ *		In FE/BE protocol version 1.0, this hack is necessary to support
+ *		libpq's crufty way of determining whether a multiple-command
+ *		query string is done.  In protocol 2.0 it's probably not really
+ *		necessary to distinguish empty queries anymore, but we still do it
+ *		for backwards compatibility with 1.0.  In protocol 3.0 it has some
+ *		use again, since it ensures that there will be a recognizable end
+ *		to the response to an Execute message.
  * ----------------
  */
 void
@@ -239,8 +244,14 @@ NullCommand(CommandDest dest)
 		case DestRemoteExecute:
 		case DestRemoteSimple:
 
-			/* Tell the FE that we saw an empty query string */
-			pq_putemptymessage('I');
+			/*
+			 * tell the fe that we saw an empty query string.  In protocols
+			 * before 3.0 this has a useless empty-string message body.
+			 */
+			if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3)
+				pq_putemptymessage('I');
+			else
+				pq_putmessage('I', "", 1);
 			break;
 
 		case DestNone:
@@ -275,6 +286,7 @@ ReadyForQuery(CommandDest dest)
 		case DestRemote:
 		case DestRemoteExecute:
 		case DestRemoteSimple:
+			if (PG_PROTOCOL_MAJOR(FrontendProtocol) >= 3)
 			{
 				StringInfoData buf;
 
@@ -282,6 +294,8 @@ ReadyForQuery(CommandDest dest)
 				pq_sendbyte(&buf, TransactionBlockStatusCode());
 				pq_endmessage(&buf);
 			}
+			else
+				pq_putemptymessage('Z');
 			/* Flush output at end of cycle in any case. */
 			pq_flush();
 			break;

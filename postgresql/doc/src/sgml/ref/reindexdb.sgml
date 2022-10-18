@@ -93,7 +93,7 @@ PostgreSQL documentation
 
   <para>
    <application>reindexdb</application> is a wrapper around the SQL
-   command <link linkend="sql-reindex"><command>REINDEX</command></link>.
+   command <xref linkend="sql-reindex"/>.
    There is no effective difference between reindexing databases via
    this utility and via other methods for accessing the server.
   </para>
@@ -233,16 +233,6 @@ PostgreSQL documentation
         Reindex <replaceable class="parameter">table</replaceable> only.
         Multiple tables can be reindexed by writing multiple
         <option>-t</option> switches.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--tablespace=<replaceable class="parameter">tablespace</replaceable></option></term>
-      <listitem>
-       <para>
-        Specifies the tablespace where indexes are rebuilt. (This name is
-        processed as a double-quoted identifier.)
        </para>
       </listitem>
      </varlistentry>

@@ -3,7 +3,7 @@
  * nodeGather.c
  *	  Support routines for scanning a plan via multiple workers.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * A Gather executor launches parallel workers to run multiple copies of a
@@ -46,7 +46,7 @@
 
 static TupleTableSlot *ExecGather(PlanState *pstate);
 static TupleTableSlot *gather_getnext(GatherState *gatherstate);
-static MinimalTuple gather_readnext(GatherState *gatherstate);
+static HeapTuple gather_readnext(GatherState *gatherstate);
 static void ExecShutdownGatherWorkers(GatherState *node);
 
 
@@ -120,7 +120,7 @@ ExecInitGather(Gather *node, EState *estate, int eflags)
 	 * Initialize funnel slot to same tuple descriptor as outer plan.
 	 */
 	gatherstate->funnel_slot = ExecInitExtraTupleSlot(estate, tupDesc,
-													  &TTSOpsMinimalTuple);
+													  &TTSOpsHeapTuple);
 
 	/*
 	 * Gather doesn't support checking a qual (it's always more efficient to
@@ -266,7 +266,7 @@ gather_getnext(GatherState *gatherstate)
 	PlanState  *outerPlan = outerPlanState(gatherstate);
 	TupleTableSlot *outerTupleSlot;
 	TupleTableSlot *fslot = gatherstate->funnel_slot;
-	MinimalTuple tup;
+	HeapTuple	tup;
 
 	while (gatherstate->nreaders > 0 || gatherstate->need_to_scan_locally)
 	{
@@ -278,9 +278,9 @@ gather_getnext(GatherState *gatherstate)
 
 			if (HeapTupleIsValid(tup))
 			{
-				ExecStoreMinimalTuple(tup,	/* tuple to store */
-									  fslot,	/* slot to store the tuple */
-									  false);	/* don't pfree tuple  */
+				ExecStoreHeapTuple(tup, /* tuple to store */
+								   fslot,	/* slot to store the tuple */
+								   true);	/* pfree tuple when done with it */
 				return fslot;
 			}
 		}
@@ -308,7 +308,7 @@ gather_getnext(GatherState *gatherstate)
 /*
  * Attempt to read a tuple from one of our parallel workers.
  */
-static MinimalTuple
+static HeapTuple
 gather_readnext(GatherState *gatherstate)
 {
 	int			nvisited = 0;
@@ -316,7 +316,7 @@ gather_readnext(GatherState *gatherstate)
 	for (;;)
 	{
 		TupleQueueReader *reader;
-		MinimalTuple tup;
+		HeapTuple	tup;
 		bool		readerdone;
 
 		/* Check for async events, particularly messages from workers. */

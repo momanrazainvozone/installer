@@ -9,7 +9,7 @@
  * storage management for portals (but doesn't run any queries in them).
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -76,8 +76,14 @@ PerformCursorOpen(ParseState *pstate, DeclareCursorStmt *cstmt, ParamListInfo pa
 	 * rewriter.  We do not do AcquireRewriteLocks: we assume the query either
 	 * came straight from the parser, or suitable locks were acquired by
 	 * plancache.c.
+	 *
+	 * Because the rewriter and planner tend to scribble on the input, we make
+	 * a preliminary copy of the source querytree.  This prevents problems in
+	 * the case that the DECLARE CURSOR is in a portal or plpgsql function and
+	 * is executed repeatedly.  (See also the same hack in EXPLAIN and
+	 * PREPARE.)  XXX FIXME someday.
 	 */
-	rewritten = QueryRewrite(query);
+	rewritten = QueryRewrite((Query *) copyObject(query));
 
 	/* SELECT should never rewrite to more or less than one query */
 	if (list_length(rewritten) != 1)
@@ -412,9 +418,7 @@ PersistHoldablePortal(Portal portal)
 		SetTuplestoreDestReceiverParams(queryDesc->dest,
 										portal->holdStore,
 										portal->holdContext,
-										true,
-										NULL,
-										NULL);
+										true);
 
 		/* Fetch the result set into the tuplestore */
 		ExecutorRun(queryDesc, direction, 0L, false);

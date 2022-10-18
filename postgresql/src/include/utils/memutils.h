@@ -7,7 +7,7 @@
  *	  of the API of the memory management subsystem.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/utils/memutils.h
@@ -84,8 +84,7 @@ extern MemoryContext MemoryContextGetParent(MemoryContext context);
 extern bool MemoryContextIsEmpty(MemoryContext context);
 extern Size MemoryContextMemAllocated(MemoryContext context, bool recurse);
 extern void MemoryContextStats(MemoryContext context);
-extern void MemoryContextStatsDetail(MemoryContext context, int max_children,
-									 bool print_to_stderr);
+extern void MemoryContextStatsDetail(MemoryContext context, int max_children);
 extern void MemoryContextAllowInCriticalSection(MemoryContext context,
 												bool allow);
 
@@ -145,8 +144,6 @@ extern void MemoryContextCreate(MemoryContext node,
 								MemoryContext parent,
 								const char *name);
 
-extern void HandleLogMemoryContextInterrupt(void);
-extern void ProcessLogMemoryContextInterrupt(void);
 
 /*
  * Memory-context-type-specific functions
@@ -183,9 +180,7 @@ extern MemoryContext SlabContextCreate(MemoryContext parent,
 /* generation.c */
 extern MemoryContext GenerationContextCreate(MemoryContext parent,
 											 const char *name,
-											 Size minContextSize,
-											 Size initBlockSize,
-											 Size maxBlockSize);
+											 Size blockSize);
 
 /*
  * Recommended default alloc parameters, suitable for "ordinary" contexts

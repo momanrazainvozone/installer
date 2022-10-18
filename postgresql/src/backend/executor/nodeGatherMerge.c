@@ -3,7 +3,7 @@
  * nodeGatherMerge.c
  *		Scan a plan in multiple workers, and do order-preserving merge.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -45,7 +45,7 @@
  */
 typedef struct GMReaderTupleBuffer
 {
-	MinimalTuple *tuple;		/* array of length MAX_TUPLE_STORE */
+	HeapTuple  *tuple;			/* array of length MAX_TUPLE_STORE */
 	int			nTuples;		/* number of tuples currently stored */
 	int			readCounter;	/* index of next tuple to extract */
 	bool		done;			/* true if reader is known exhausted */
@@ -54,8 +54,8 @@ typedef struct GMReaderTupleBuffer
 static TupleTableSlot *ExecGatherMerge(PlanState *pstate);
 static int32 heap_compare_slots(Datum a, Datum b, void *arg);
 static TupleTableSlot *gather_merge_getnext(GatherMergeState *gm_state);
-static MinimalTuple gm_readnext_tuple(GatherMergeState *gm_state, int nreader,
-									  bool nowait, bool *done);
+static HeapTuple gm_readnext_tuple(GatherMergeState *gm_state, int nreader,
+								   bool nowait, bool *done);
 static void ExecShutdownGatherMergeWorkers(GatherMergeState *node);
 static void gather_merge_setup(GatherMergeState *gm_state);
 static void gather_merge_init(GatherMergeState *gm_state);
@@ -419,12 +419,12 @@ gather_merge_setup(GatherMergeState *gm_state)
 	{
 		/* Allocate the tuple array with length MAX_TUPLE_STORE */
 		gm_state->gm_tuple_buffers[i].tuple =
-			(MinimalTuple *) palloc0(sizeof(MinimalTuple) * MAX_TUPLE_STORE);
+			(HeapTuple *) palloc0(sizeof(HeapTuple) * MAX_TUPLE_STORE);
 
 		/* Initialize tuple slot for worker */
 		gm_state->gm_slots[i + 1] =
 			ExecInitExtraTupleSlot(gm_state->ps.state, gm_state->tupDesc,
-								   &TTSOpsMinimalTuple);
+								   &TTSOpsHeapTuple);
 	}
 
 	/* Allocate the resources for the merge */
@@ -533,7 +533,7 @@ gather_merge_clear_tuples(GatherMergeState *gm_state)
 		GMReaderTupleBuffer *tuple_buffer = &gm_state->gm_tuple_buffers[i];
 
 		while (tuple_buffer->readCounter < tuple_buffer->nTuples)
-			pfree(tuple_buffer->tuple[tuple_buffer->readCounter++]);
+			heap_freetuple(tuple_buffer->tuple[tuple_buffer->readCounter++]);
 
 		ExecClearTuple(gm_state->gm_slots[i + 1]);
 	}
@@ -613,13 +613,13 @@ load_tuple_array(GatherMergeState *gm_state, int reader)
 	/* Try to fill additional slots in the array. */
 	for (i = tuple_buffer->nTuples; i < MAX_TUPLE_STORE; i++)
 	{
-		MinimalTuple tuple;
+		HeapTuple	tuple;
 
 		tuple = gm_readnext_tuple(gm_state,
 								  reader,
 								  true,
 								  &tuple_buffer->done);
-		if (!tuple)
+		if (!HeapTupleIsValid(tuple))
 			break;
 		tuple_buffer->tuple[i] = tuple;
 		tuple_buffer->nTuples++;
@@ -637,7 +637,7 @@ static bool
 gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 {
 	GMReaderTupleBuffer *tuple_buffer;
-	MinimalTuple tup;
+	HeapTuple	tup;
 
 	/*
 	 * If we're being asked to generate a tuple from the leader, then we just
@@ -687,7 +687,7 @@ gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 								reader,
 								nowait,
 								&tuple_buffer->done);
-		if (!tup)
+		if (!HeapTupleIsValid(tup))
 			return false;
 
 		/*
@@ -697,13 +697,13 @@ gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 		load_tuple_array(gm_state, reader);
 	}
 
-	Assert(tup);
+	Assert(HeapTupleIsValid(tup));
 
 	/* Build the TupleTableSlot for the given tuple */
-	ExecStoreMinimalTuple(tup,	/* tuple to store */
-						  gm_state->gm_slots[reader],	/* slot in which to
-														 * store the tuple */
-						  true);	/* pfree tuple when done with it */
+	ExecStoreHeapTuple(tup,		/* tuple to store */
+					   gm_state->gm_slots[reader],	/* slot in which to store
+													 * the tuple */
+					   true);	/* pfree tuple when done with it */
 
 	return true;
 }
@@ -711,12 +711,12 @@ gather_merge_readnext(GatherMergeState *gm_state, int reader, bool nowait)
 /*
  * Attempt to read a tuple from given worker.
  */
-static MinimalTuple
+static HeapTuple
 gm_readnext_tuple(GatherMergeState *gm_state, int nreader, bool nowait,
 				  bool *done)
 {
 	TupleQueueReader *reader;
-	MinimalTuple tup;
+	HeapTuple	tup;
 
 	/* Check for async events, particularly messages from workers. */
 	CHECK_FOR_INTERRUPTS();
@@ -732,11 +732,7 @@ gm_readnext_tuple(GatherMergeState *gm_state, int nreader, bool nowait,
 	reader = gm_state->reader[nreader - 1];
 	tup = TupleQueueReaderNext(reader, nowait, done);
 
-	/*
-	 * Since we'll be buffering these across multiple calls, we need to make a
-	 * copy.
-	 */
-	return tup ? heap_copy_minimal_tuple(tup) : NULL;
+	return tup;
 }
 
 /*

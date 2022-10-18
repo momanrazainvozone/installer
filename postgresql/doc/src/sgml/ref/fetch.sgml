@@ -27,10 +27,9 @@ PostgreSQL documentation
  <refsynopsisdiv>
 <!-- Note the "direction" bit is also in ref/move.sgml -->
 <synopsis>
-FETCH [ <replaceable class="parameter">direction</replaceable> ] [ FROM | IN ] <replaceable class="parameter">cursor_name</replaceable>
+FETCH [ <replaceable class="parameter">direction</replaceable> [ FROM | IN ] ] <replaceable class="parameter">cursor_name</replaceable>
 
-<phrase>where <replaceable class="parameter">direction</replaceable> can
-be one of:</phrase>
+<phrase>where <replaceable class="parameter">direction</replaceable> can be empty or one of:</phrase>
 
     NEXT
     PRIOR
@@ -336,9 +335,9 @@ FETCH <replaceable class="parameter">count</replaceable>
   </para>
 
   <para>
-   <link linkend="sql-declare"><command>DECLARE</command></link>
+   <xref linkend="sql-declare"/>
    is used to define a cursor.  Use
-   <link linkend="sql-move"><command>MOVE</command></link>
+   <xref linkend="sql-move"/>
    to change cursor position without retrieving data.
   </para>
  </refsect1>

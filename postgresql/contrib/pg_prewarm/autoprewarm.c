@@ -11,12 +11,12 @@
  *		pages from a relation that is in the process of being dropped.
  *
  *		While prewarming, autoprewarm will use two workers.  There's a
- *		leader worker that reads and sorts the list of blocks to be
+ *		master worker that reads and sorts the list of blocks to be
  *		prewarmed and then launches a per-database worker for each
  *		relevant database in turn.  The former keeps running after the
  *		initial prewarm is complete to update the dump file periodically.
  *
- *	Copyright (c) 2016-2022, PostgreSQL Global Development Group
+ *	Copyright (c) 2016-2020, PostgreSQL Global Development Group
  *
  *	IDENTIFICATION
  *		contrib/pg_prewarm/autoprewarm.c
@@ -35,10 +35,8 @@
 #include "miscadmin.h"
 #include "pgstat.h"
 #include "postmaster/bgworker.h"
-#include "postmaster/interrupt.h"
 #include "storage/buf_internals.h"
 #include "storage/dsm.h"
-#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
@@ -48,7 +46,6 @@
 #include "storage/smgr.h"
 #include "tcop/tcopprot.h"
 #include "utils/acl.h"
-#include "utils/datetime.h"
 #include "utils/guc.h"
 #include "utils/memutils.h"
 #include "utils/rel.h"
@@ -91,13 +88,17 @@ PG_FUNCTION_INFO_V1(autoprewarm_dump_now);
 
 static void apw_load_buffers(void);
 static int	apw_dump_now(bool is_bgworker, bool dump_unlogged);
-static void apw_start_leader_worker(void);
+static void apw_start_master_worker(void);
 static void apw_start_database_worker(void);
 static bool apw_init_shmem(void);
 static void apw_detach_shmem(int code, Datum arg);
 static int	apw_compare_blockinfo(const void *p, const void *q);
-static void autoprewarm_shmem_request(void);
-static shmem_request_hook_type prev_shmem_request_hook = NULL;
+static void apw_sigterm_handler(SIGNAL_ARGS);
+static void apw_sighup_handler(SIGNAL_ARGS);
+
+/* Flags set by signal handlers */
+static volatile sig_atomic_t got_sigterm = false;
+static volatile sig_atomic_t got_sighup = false;
 
 /* Pointer to shared-memory state. */
 static AutoPrewarmSharedState *apw_state = NULL;
@@ -139,30 +140,17 @@ _PG_init(void)
 							 NULL,
 							 NULL);
 
-	MarkGUCPrefixReserved("pg_prewarm");
+	EmitWarningsOnPlaceholders("pg_prewarm");
 
-	prev_shmem_request_hook = shmem_request_hook;
-	shmem_request_hook = autoprewarm_shmem_request;
+	RequestAddinShmemSpace(MAXALIGN(sizeof(AutoPrewarmSharedState)));
 
 	/* Register autoprewarm worker, if enabled. */
 	if (autoprewarm)
-		apw_start_leader_worker();
+		apw_start_master_worker();
 }
 
 /*
- * Requests any additional shared memory required for autoprewarm.
- */
-static void
-autoprewarm_shmem_request(void)
-{
-	if (prev_shmem_request_hook)
-		prev_shmem_request_hook();
-
-	RequestAddinShmemSpace(MAXALIGN(sizeof(AutoPrewarmSharedState)));
-}
-
-/*
- * Main entry point for the leader autoprewarm process.  Per-database workers
+ * Main entry point for the master autoprewarm process.  Per-database workers
  * have a separate entry point.
  */
 void
@@ -173,8 +161,8 @@ autoprewarm_main(Datum main_arg)
 	TimestampTz last_dump_time = 0;
 
 	/* Establish signal handlers; once that's done, unblock signals. */
-	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
+	pqsignal(SIGTERM, apw_sigterm_handler);
+	pqsignal(SIGHUP, apw_sighup_handler);
 	pqsignal(SIGUSR1, procsignal_sigusr1_handler);
 	BackgroundWorkerUnblockSignals();
 
@@ -218,24 +206,24 @@ autoprewarm_main(Datum main_arg)
 	if (first_time)
 	{
 		apw_load_buffers();
-		final_dump_allowed = !ShutdownRequestPending;
+		final_dump_allowed = !got_sigterm;
 		last_dump_time = GetCurrentTimestamp();
 	}
 
 	/* Periodically dump buffers until terminated. */
-	while (!ShutdownRequestPending)
+	while (!got_sigterm)
 	{
 		/* In case of a SIGHUP, just reload the configuration. */
-		if (ConfigReloadPending)
+		if (got_sighup)
 		{
-			ConfigReloadPending = false;
+			got_sighup = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
 		if (autoprewarm_interval <= 0)
 		{
 			/* We're only dumping at shutdown, so just wait forever. */
-			(void) WaitLatch(MyLatch,
+			(void) WaitLatch(&MyProc->procLatch,
 							 WL_LATCH_SET | WL_EXIT_ON_PM_DEATH,
 							 -1L,
 							 PG_WAIT_EXTENSION);
@@ -262,14 +250,14 @@ autoprewarm_main(Datum main_arg)
 			}
 
 			/* Sleep until the next dump time. */
-			(void) WaitLatch(MyLatch,
+			(void) WaitLatch(&MyProc->procLatch,
 							 WL_LATCH_SET | WL_TIMEOUT | WL_EXIT_ON_PM_DEATH,
 							 delay_in_ms,
 							 PG_WAIT_EXTENSION);
 		}
 
 		/* Reset the latch, loop. */
-		ResetLatch(MyLatch);
+		ResetLatch(&MyProc->procLatch);
 	}
 
 	/*
@@ -414,7 +402,7 @@ apw_load_buffers(void)
 		 * Likewise, don't launch if we've already been told to shut down.
 		 * (The launch would fail anyway, but we might as well skip it.)
 		 */
-		if (ShutdownRequestPending)
+		if (got_sigterm)
 			break;
 
 		/*
@@ -435,7 +423,7 @@ apw_load_buffers(void)
 	LWLockRelease(&apw_state->lock);
 
 	/* Report our success, if we were able to finish. */
-	if (!ShutdownRequestPending)
+	if (!got_sigterm)
 		ereport(LOG,
 				(errmsg("autoprewarm successfully prewarmed %d of %d previously-loaded blocks",
 						apw_state->prewarmed_blocks, num_elements)));
@@ -530,13 +518,15 @@ autoprewarm_database_main(Datum main_arg)
 			old_blk->filenode != blk->filenode ||
 			old_blk->forknum != blk->forknum)
 		{
+			RelationOpenSmgr(rel);
+
 			/*
 			 * smgrexists is not safe for illegal forknum, hence check whether
 			 * the passed forknum is valid before using it in smgrexists.
 			 */
 			if (blk->forknum > InvalidForkNumber &&
 				blk->forknum <= MAX_FORKNUM &&
-				smgrexists(RelationGetSmgr(rel), blk->forknum))
+				smgrexists(rel->rd_smgr, blk->forknum))
 				nblocks = RelationGetNumberOfBlocksInFork(rel, blk->forknum);
 			else
 				nblocks = 0;
@@ -711,7 +701,7 @@ apw_dump_now(bool is_bgworker, bool dump_unlogged)
 	apw_state->pid_using_dumpfile = InvalidPid;
 
 	ereport(DEBUG1,
-			(errmsg_internal("wrote block details for %d blocks", num_blocks)));
+			(errmsg("wrote block details for %d blocks", num_blocks)));
 	return num_blocks;
 }
 
@@ -739,7 +729,7 @@ autoprewarm_start_worker(PG_FUNCTION_ARGS)
 				 errmsg("autoprewarm worker is already running under PID %lu",
 						(unsigned long) pid)));
 
-	apw_start_leader_worker();
+	apw_start_master_worker();
 
 	PG_RETURN_VOID();
 }
@@ -809,10 +799,10 @@ apw_detach_shmem(int code, Datum arg)
 }
 
 /*
- * Start autoprewarm leader worker process.
+ * Start autoprewarm master worker process.
  */
 static void
-apw_start_leader_worker(void)
+apw_start_master_worker(void)
 {
 	BackgroundWorker worker;
 	BackgroundWorkerHandle *handle;
@@ -824,8 +814,8 @@ apw_start_leader_worker(void)
 	worker.bgw_start_time = BgWorkerStart_ConsistentState;
 	strcpy(worker.bgw_library_name, "pg_prewarm");
 	strcpy(worker.bgw_function_name, "autoprewarm_main");
-	strcpy(worker.bgw_name, "autoprewarm leader");
-	strcpy(worker.bgw_type, "autoprewarm leader");
+	strcpy(worker.bgw_name, "autoprewarm master");
+	strcpy(worker.bgw_type, "autoprewarm master");
 
 	if (process_shared_preload_libraries_in_progress)
 	{
@@ -916,4 +906,36 @@ apw_compare_blockinfo(const void *p, const void *q)
 	cmp_member_elem(blocknum);
 
 	return 0;
+}
+
+/*
+ * Signal handler for SIGTERM
+ */
+static void
+apw_sigterm_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sigterm = true;
+
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
+
+	errno = save_errno;
+}
+
+/*
+ * Signal handler for SIGHUP
+ */
+static void
+apw_sighup_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sighup = true;
+
+	if (MyProc)
+		SetLatch(&MyProc->procLatch);
+
+	errno = save_errno;
 }

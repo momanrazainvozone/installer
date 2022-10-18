@@ -1,4 +1,16 @@
-/* src/include/pg_config.h.in.  Generated from configure.ac by autoheader.  */
+/* src/include/pg_config.h.in.  Generated from configure.in by autoheader.  */
+
+/* Define to the type of arg 1 of 'accept' */
+#undef ACCEPT_TYPE_ARG1
+
+/* Define to the type of arg 2 of 'accept' */
+#undef ACCEPT_TYPE_ARG2
+
+/* Define to the type of arg 3 of 'accept' */
+#undef ACCEPT_TYPE_ARG3
+
+/* Define to the return type of 'accept' */
+#undef ACCEPT_TYPE_RETURN
 
 /* Define if building universal (internal helper macro) */
 #undef AC_APPLE_UNIVERSAL_BUILD
@@ -41,9 +53,6 @@
 
 /* Define to the default TCP port number as a string constant. */
 #undef DEF_PGPORT_STR
-
-/* Define to the file name extension of dynamically-loadable modules. */
-#undef DLSUFFIX
 
 /* Define to build with GSSAPI support. (--with-gssapi) */
 #undef ENABLE_GSS
@@ -133,14 +142,6 @@
    don't. */
 #undef HAVE_DECL_POSIX_FADVISE
 
-/* Define to 1 if you have the declaration of `preadv', and to 0 if you don't.
-   */
-#undef HAVE_DECL_PREADV
-
-/* Define to 1 if you have the declaration of `pwritev', and to 0 if you
-   don't. */
-#undef HAVE_DECL_PWRITEV
-
 /* Define to 1 if you have the declaration of `RTLD_GLOBAL', and to 0 if you
    don't. */
 #undef HAVE_DECL_RTLD_GLOBAL
@@ -148,10 +149,6 @@
 /* Define to 1 if you have the declaration of `RTLD_NOW', and to 0 if you
    don't. */
 #undef HAVE_DECL_RTLD_NOW
-
-/* Define to 1 if you have the declaration of `sigwait', and to 0 if you
-   don't. */
-#undef HAVE_DECL_SIGWAIT
 
 /* Define to 1 if you have the declaration of `strlcat', and to 0 if you
    don't. */
@@ -271,20 +268,11 @@
 /* Define to 1 if you have the `history_truncate_file' function. */
 #undef HAVE_HISTORY_TRUNCATE_FILE
 
-/* Define to 1 if you have the `HMAC_CTX_free' function. */
-#undef HAVE_HMAC_CTX_FREE
-
-/* Define to 1 if you have the `HMAC_CTX_new' function. */
-#undef HAVE_HMAC_CTX_NEW
-
 /* Define to 1 if you have the <ifaddrs.h> header file. */
 #undef HAVE_IFADDRS_H
 
 /* Define to 1 if you have the `inet_aton' function. */
 #undef HAVE_INET_ATON
-
-/* Define to 1 if you have the `inet_pton' function. */
-#undef HAVE_INET_PTON
 
 /* Define to 1 if the system has the type `int64'. */
 #undef HAVE_INT64
@@ -328,9 +316,6 @@
 /* Define to 1 if you have the `ldap' library (-lldap). */
 #undef HAVE_LIBLDAP
 
-/* Define to 1 if you have the `lz4' library (-llz4). */
-#undef HAVE_LIBLZ4
-
 /* Define to 1 if you have the `m' library (-lm). */
 #undef HAVE_LIBM
 
@@ -357,9 +342,6 @@
 
 /* Define to 1 if you have the `z' library (-lz). */
 #undef HAVE_LIBZ
-
-/* Define to 1 if you have the `zstd' library (-lzstd). */
-#undef HAVE_LIBZSTD
 
 /* Define to 1 if you have the `link' function. */
 #undef HAVE_LINK
@@ -412,9 +394,6 @@
 /* Define to 1 if you have the <poll.h> header file. */
 #undef HAVE_POLL_H
 
-/* Define to 1 if you have a POSIX-conforming sigwait declaration. */
-#undef HAVE_POSIX_DECL_SIGWAIT
-
 /* Define to 1 if you have the `posix_fadvise' function. */
 #undef HAVE_POSIX_FADVISE
 
@@ -439,9 +418,6 @@
 /* Define if you have POSIX threads libraries and header files. */
 #undef HAVE_PTHREAD
 
-/* Define to 1 if you have the `pthread_barrier_wait' function. */
-#undef HAVE_PTHREAD_BARRIER_WAIT
-
 /* Define to 1 if you have the `pthread_is_threaded_np' function. */
 #undef HAVE_PTHREAD_IS_THREADED_NP
 
@@ -450,6 +426,9 @@
 
 /* Define to 1 if you have the `pwrite' function. */
 #undef HAVE_PWRITE
+
+/* Define to 1 if you have the `random' function. */
+#undef HAVE_RANDOM
 
 /* Define to 1 if you have the <readline.h> header file. */
 #undef HAVE_READLINE_H
@@ -463,8 +442,9 @@
 /* Define to 1 if you have the `readlink' function. */
 #undef HAVE_READLINK
 
-/* Define to 1 if you have the `readv' function. */
-#undef HAVE_READV
+/* Define to 1 if you have the global variable
+   'rl_completion_append_character'. */
+#undef HAVE_RL_COMPLETION_APPEND_CHARACTER
 
 /* Define to 1 if you have the `rl_completion_matches' function. */
 #undef HAVE_RL_COMPLETION_MATCHES
@@ -487,9 +467,6 @@
 /* Define to 1 if you have the `rl_reset_screen_size' function. */
 #undef HAVE_RL_RESET_SCREEN_SIZE
 
-/* Define to 1 if you have the `rl_variable_bind' function. */
-#undef HAVE_RL_VARIABLE_BIND
-
 /* Define to 1 if you have the <security/pam_appl.h> header file. */
 #undef HAVE_SECURITY_PAM_APPL_H
 
@@ -508,11 +485,11 @@
 /* Define to 1 if you have the `shm_open' function. */
 #undef HAVE_SHM_OPEN
 
-/* Define to 1 if the system has the type `socklen_t'. */
-#undef HAVE_SOCKLEN_T
-
 /* Define to 1 if you have spinlocks. */
 #undef HAVE_SPINLOCKS
+
+/* Define to 1 if you have the `srandom' function. */
+#undef HAVE_SRANDOM
 
 /* Define to 1 if stdbool.h conforms to C99. */
 #undef HAVE_STDBOOL_H
@@ -598,9 +575,6 @@
 /* Define to 1 if you have the `symlink' function. */
 #undef HAVE_SYMLINK
 
-/* Define to 1 if you have the `syncfs' function. */
-#undef HAVE_SYNCFS
-
 /* Define to 1 if you have the `sync_file_range' function. */
 #undef HAVE_SYNC_FILE_RANGE
 
@@ -615,9 +589,6 @@
 
 /* Define to 1 if you have the <sys/ipc.h> header file. */
 #undef HAVE_SYS_IPC_H
-
-/* Define to 1 if you have the <sys/personality.h> header file. */
-#undef HAVE_SYS_PERSONALITY_H
 
 /* Define to 1 if you have the <sys/prctl.h> header file. */
 #undef HAVE_SYS_PRCTL_H
@@ -640,9 +611,6 @@
 /* Define to 1 if you have the <sys/shm.h> header file. */
 #undef HAVE_SYS_SHM_H
 
-/* Define to 1 if you have the <sys/signalfd.h> header file. */
-#undef HAVE_SYS_SIGNALFD_H
-
 /* Define to 1 if you have the <sys/sockio.h> header file. */
 #undef HAVE_SYS_SOCKIO_H
 
@@ -657,9 +625,6 @@
 
 /* Define to 1 if you have the <sys/ucred.h> header file. */
 #undef HAVE_SYS_UCRED_H
-
-/* Define to 1 if you have the <sys/uio.h> header file. */
-#undef HAVE_SYS_UIO_H
 
 /* Define to 1 if you have the <sys/un.h> header file. */
 #undef HAVE_SYS_UN_H
@@ -714,9 +679,6 @@
 
 /* Define to 1 if you have the <winldap.h> header file. */
 #undef HAVE_WINLDAP_H
-
-/* Define to 1 if you have the `writev' function. */
-#undef HAVE_WRITEV
 
 /* Define to 1 if you have the `X509_get_signature_nid' function. */
 #undef HAVE_X509_GET_SIGNATURE_NID
@@ -789,10 +751,6 @@
 
 /* Define bytes to use libc memset(). */
 #undef MEMSET_LOOP_LIMIT
-
-/* Define to the OpenSSL API version in use. This avoids deprecation warnings
-   from newer OpenSSL versions. */
-#undef OPENSSL_API_COMPAT
 
 /* Define to the address where bug reports for this package should be sent. */
 #undef PACKAGE_BUGREPORT
@@ -903,6 +861,9 @@
 /* Define to 1 to build with BSD Authentication support. (--with-bsd-auth) */
 #undef USE_BSD_AUTH
 
+/* Define to use /dev/urandom for random number generation */
+#undef USE_DEV_URANDOM
+
 /* Define to build with ICU support. (--with-icu) */
 #undef USE_ICU
 
@@ -919,14 +880,14 @@
 /* Define to 1 to build with LLVM based JIT support. (--with-llvm) */
 #undef USE_LLVM
 
-/* Define to 1 to build with LZ4 support. (--with-lz4) */
-#undef USE_LZ4
-
 /* Define to select named POSIX semaphores. */
 #undef USE_NAMED_POSIX_SEMAPHORES
 
-/* Define to 1 to build with OpenSSL support. (--with-ssl=openssl) */
+/* Define to build with OpenSSL support. (--with-openssl) */
 #undef USE_OPENSSL
+
+/* Define to use OpenSSL for random number generation */
+#undef USE_OPENSSL_RANDOM
 
 /* Define to 1 to build with PAM support. (--with-pam) */
 #undef USE_PAM
@@ -952,14 +913,14 @@
 /* Define to select unnamed POSIX semaphores. */
 #undef USE_UNNAMED_POSIX_SEMAPHORES
 
+/* Define to use native Windows API for random number generation */
+#undef USE_WIN32_RANDOM
+
 /* Define to select Win32-style semaphores. */
 #undef USE_WIN32_SEMAPHORES
 
 /* Define to select Win32-style shared memory. */
 #undef USE_WIN32_SHARED_MEMORY
-
-/* Define to 1 to build with ZSTD support. (--with-zstd) */
-#undef USE_ZSTD
 
 /* Define to 1 if `wcstombs_l' requires <xlocale.h>. */
 #undef WCSTOMBS_L_IN_XLOCALE

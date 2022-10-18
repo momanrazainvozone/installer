@@ -6,7 +6,7 @@
  *
  * Transforms tokenized jsonpath into tree of JsonPathParseItem structs.
  *
- * Copyright (c) 2019-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2019-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	src/backend/utils/adt/jsonpath_gram.y
@@ -76,8 +76,7 @@ static JsonPathParseItem *makeItemLikeRegex(JsonPathParseItem *expr,
 %name-prefix="jsonpath_yy"
 %parse-param {JsonPathParseResult **result}
 
-%union
-{
+%union {
 	JsonPathString		str;
 	List			   *elems;	/* list of JsonPathParseItem */
 	List			   *indexs;	/* list of integers */
@@ -131,7 +130,6 @@ result:
 										*result = palloc(sizeof(JsonPathParseResult));
 										(*result)->expr = $2;
 										(*result)->lax = $1;
-										(void) yynerrs;
 									}
 	| /* EMPTY */					{ *result = NULL; }
 	;
@@ -154,7 +152,7 @@ scalar_value:
 	| FALSE_P						{ $$ = makeItemBool(false); }
 	| NUMERIC_P						{ $$ = makeItemNumeric(&$1); }
 	| INT_P							{ $$ = makeItemNumeric(&$1); }
-	| VARIABLE_P					{ $$ = makeItemVariable(&$1); }
+	| VARIABLE_P 					{ $$ = makeItemVariable(&$1); }
 	;
 
 comp_op:
@@ -176,12 +174,12 @@ predicate:
 	| expr comp_op expr				{ $$ = makeItemBinary($2, $1, $3); }
 	| predicate AND_P predicate		{ $$ = makeItemBinary(jpiAnd, $1, $3); }
 	| predicate OR_P predicate		{ $$ = makeItemBinary(jpiOr, $1, $3); }
-	| NOT_P delimited_predicate		{ $$ = makeItemUnary(jpiNot, $2); }
+	| NOT_P delimited_predicate 	{ $$ = makeItemUnary(jpiNot, $2); }
 	| '(' predicate ')' IS_P UNKNOWN_P
 									{ $$ = makeItemUnary(jpiIsUnknown, $2); }
 	| expr STARTS_P WITH_P starts_with_initial
 									{ $$ = makeItemBinary(jpiStartsWith, $1, $4); }
-	| expr LIKE_REGEX_P STRING_P	{ $$ = makeItemLikeRegex($1, &$3, NULL); }
+	| expr LIKE_REGEX_P STRING_P 	{ $$ = makeItemLikeRegex($1, &$3, NULL); }
 	| expr LIKE_REGEX_P STRING_P FLAG_P STRING_P
 									{ $$ = makeItemLikeRegex($1, &$3, &$5); }
 	;
@@ -233,7 +231,7 @@ array_accessor:
 	;
 
 any_level:
-	INT_P							{ $$ = pg_strtoint32($1.val); }
+	INT_P							{ $$ = pg_atoi($1.val, 4, 0); }
 	| LAST_P						{ $$ = -1; }
 	;
 
@@ -314,7 +312,7 @@ method:
 static JsonPathParseItem *
 makeItemType(JsonPathItemType type)
 {
-	JsonPathParseItem *v = palloc(sizeof(*v));
+	JsonPathParseItem  *v = palloc(sizeof(*v));
 
 	CHECK_FOR_INTERRUPTS();
 
@@ -327,7 +325,7 @@ makeItemType(JsonPathItemType type)
 static JsonPathParseItem *
 makeItemString(JsonPathString *s)
 {
-	JsonPathParseItem *v;
+	JsonPathParseItem  *v;
 
 	if (s == NULL)
 	{
@@ -346,7 +344,7 @@ makeItemString(JsonPathString *s)
 static JsonPathParseItem *
 makeItemVariable(JsonPathString *s)
 {
-	JsonPathParseItem *v;
+	JsonPathParseItem  *v;
 
 	v = makeItemType(jpiVariable);
 	v->value.string.val = s->val;
@@ -358,7 +356,7 @@ makeItemVariable(JsonPathString *s)
 static JsonPathParseItem *
 makeItemKey(JsonPathString *s)
 {
-	JsonPathParseItem *v;
+	JsonPathParseItem  *v;
 
 	v = makeItemString(s);
 	v->type = jpiKey;
@@ -369,7 +367,7 @@ makeItemKey(JsonPathString *s)
 static JsonPathParseItem *
 makeItemNumeric(JsonPathString *s)
 {
-	JsonPathParseItem *v;
+	JsonPathParseItem  *v;
 
 	v = makeItemType(jpiNumeric);
 	v->value.numeric =
@@ -384,7 +382,7 @@ makeItemNumeric(JsonPathString *s)
 static JsonPathParseItem *
 makeItemBool(bool val)
 {
-	JsonPathParseItem *v = makeItemType(jpiBool);
+	JsonPathParseItem  *v = makeItemType(jpiBool);
 
 	v->value.boolean = val;
 
@@ -394,7 +392,7 @@ makeItemBool(bool val)
 static JsonPathParseItem *
 makeItemBinary(JsonPathItemType type, JsonPathParseItem *la, JsonPathParseItem *ra)
 {
-	JsonPathParseItem *v = makeItemType(type);
+	JsonPathParseItem  *v = makeItemType(type);
 
 	v->value.args.left = la;
 	v->value.args.right = ra;
@@ -405,7 +403,7 @@ makeItemBinary(JsonPathItemType type, JsonPathParseItem *la, JsonPathParseItem *
 static JsonPathParseItem *
 makeItemUnary(JsonPathItemType type, JsonPathParseItem *a)
 {
-	JsonPathParseItem *v;
+	JsonPathParseItem  *v;
 
 	if (type == jpiPlus && a->type == jpiNumeric && !a->next)
 		return a;
@@ -429,9 +427,9 @@ makeItemUnary(JsonPathItemType type, JsonPathParseItem *a)
 static JsonPathParseItem *
 makeItemList(List *list)
 {
-	JsonPathParseItem *head,
-			   *end;
-	ListCell   *cell;
+	JsonPathParseItem  *head,
+					   *end;
+	ListCell		   *cell;
 
 	head = end = (JsonPathParseItem *) linitial(list);
 
@@ -456,9 +454,9 @@ makeItemList(List *list)
 static JsonPathParseItem *
 makeIndexArray(List *list)
 {
-	JsonPathParseItem *v = makeItemType(jpiIndexArray);
-	ListCell   *cell;
-	int			i = 0;
+	JsonPathParseItem  *v = makeItemType(jpiIndexArray);
+	ListCell		   *cell;
+	int					i = 0;
 
 	Assert(list_length(list) > 0);
 	v->value.array.nelems = list_length(list);
@@ -468,7 +466,7 @@ makeIndexArray(List *list)
 
 	foreach(cell, list)
 	{
-		JsonPathParseItem *jpi = lfirst(cell);
+		JsonPathParseItem  *jpi = lfirst(cell);
 
 		Assert(jpi->type == jpiSubscript);
 
@@ -482,7 +480,7 @@ makeIndexArray(List *list)
 static JsonPathParseItem *
 makeAny(int first, int last)
 {
-	JsonPathParseItem *v = makeItemType(jpiAny);
+	JsonPathParseItem  *v = makeItemType(jpiAny);
 
 	v->value.anybounds.first = (first >= 0) ? first : PG_UINT32_MAX;
 	v->value.anybounds.last = (last >= 0) ? last : PG_UINT32_MAX;
@@ -494,9 +492,9 @@ static JsonPathParseItem *
 makeItemLikeRegex(JsonPathParseItem *expr, JsonPathString *pattern,
 				  JsonPathString *flags)
 {
-	JsonPathParseItem *v = makeItemType(jpiLikeRegex);
-	int			i;
-	int			cflags;
+	JsonPathParseItem  *v = makeItemType(jpiLikeRegex);
+	int					i;
+	int					cflags;
 
 	v->value.like_regex.expr = expr;
 	v->value.like_regex.pattern = pattern->val;
@@ -527,8 +525,8 @@ makeItemLikeRegex(JsonPathParseItem *expr, JsonPathString *pattern,
 				ereport(ERROR,
 						(errcode(ERRCODE_SYNTAX_ERROR),
 						 errmsg("invalid input syntax for type %s", "jsonpath"),
-						 errdetail("Unrecognized flag character \"%.*s\" in LIKE_REGEX predicate.",
-								   pg_mblen(flags->val + i), flags->val + i)));
+						 errdetail("unrecognized flag character \"%c\" in LIKE_REGEX predicate",
+								   flags->val[i])));
 				break;
 		}
 	}
@@ -583,14 +581,6 @@ jspConvertRegexFlags(uint32 xflags)
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("XQuery \"x\" flag (expanded regular expressions) is not implemented")));
 	}
-
-	/*
-	 * We'll never need sub-match details at execution.  While
-	 * RE_compile_and_execute would set this flag anyway, force it on here to
-	 * ensure that the regex cache entries created by makeItemLikeRegex are
-	 * useful.
-	 */
-	cflags |= REG_NOSUB;
 
 	return cflags;
 }

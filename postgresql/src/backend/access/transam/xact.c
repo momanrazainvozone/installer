@@ -5,7 +5,7 @@
  *
  * See src/backend/access/transam/README for more information.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -29,7 +29,6 @@
 #include "access/xact.h"
 #include "access/xlog.h"
 #include "access/xloginsert.h"
-#include "access/xlogrecovery.h"
 #include "access/xlogutils.h"
 #include "catalog/index.h"
 #include "catalog/namespace.h"
@@ -38,7 +37,6 @@
 #include "commands/async.h"
 #include "commands/tablecmds.h"
 #include "commands/trigger.h"
-#include "common/pg_prng.h"
 #include "executor/spi.h"
 #include "libpq/be-fsstubs.h"
 #include "libpq/pqsignal.h"
@@ -86,19 +84,6 @@ bool		XactDeferrable;
 int			synchronous_commit = SYNCHRONOUS_COMMIT_ON;
 
 /*
- * CheckXidAlive is a xid value pointing to a possibly ongoing (sub)
- * transaction.  Currently, it is used in logical decoding.  It's possible
- * that such transactions can get aborted while the decoding is ongoing in
- * which case we skip decoding that particular transaction.  To ensure that we
- * check whether the CheckXidAlive is aborted after fetching the tuple from
- * system tables.  We also ensure that during logical decoding we never
- * directly access the tableam or heap APIs because we are checking for the
- * concurrent aborts only in systable_* APIs.
- */
-TransactionId CheckXidAlive = InvalidTransactionId;
-bool		bsysscan = false;
-
-/*
  * When running as a parallel worker, we place only a single
  * TransactionStateData on the parallel worker's state stack, and the XID
  * reflected there will be that of the *innermost* currently-active
@@ -121,9 +106,9 @@ bool		bsysscan = false;
  * The XIDs are stored sorted in numerical order (not logical order) to make
  * lookups as fast as possible.
  */
-static FullTransactionId XactTopFullTransactionId = {InvalidTransactionId};
-static int	nParallelCurrentXids = 0;
-static TransactionId *ParallelCurrentXids;
+FullTransactionId XactTopFullTransactionId = {InvalidTransactionId};
+int			nParallelCurrentXids = 0;
+TransactionId *ParallelCurrentXids;
 
 /*
  * Miscellaneous flag bits to record events which occur on the top level
@@ -207,7 +192,6 @@ typedef struct TransactionStateData
 	bool		didLogXid;		/* has xid been included in WAL record? */
 	int			parallelModeLevel;	/* Enter/ExitParallelMode counter */
 	bool		chain;			/* start a new block after this one */
-	bool		topXidLogged;	/* for a subxact: is top-level XID logged? */
 	struct TransactionStateData *parent;	/* back link to parent */
 } TransactionStateData;
 
@@ -240,7 +224,6 @@ typedef struct SerializedTransactionState
 static TransactionStateData TopTransactionStateData = {
 	.state = TRANS_DEFAULT,
 	.blockState = TBLOCK_DEFAULT,
-	.topXidLogged = false,
 };
 
 /*
@@ -531,56 +514,6 @@ MarkCurrentTransactionIdLoggedIfAny(void)
 		CurrentTransactionState->didLogXid = true;
 }
 
-/*
- * IsSubxactTopXidLogPending
- *
- * This is used to decide whether we need to WAL log the top-level XID for
- * operation in a subtransaction.  We require that for logical decoding, see
- * LogicalDecodingProcessRecord.
- *
- * This returns true if wal_level >= logical and we are inside a valid
- * subtransaction, for which the assignment was not yet written to any WAL
- * record.
- */
-bool
-IsSubxactTopXidLogPending(void)
-{
-	/* check whether it is already logged */
-	if (CurrentTransactionState->topXidLogged)
-		return false;
-
-	/* wal_level has to be logical */
-	if (!XLogLogicalInfoActive())
-		return false;
-
-	/* we need to be in a transaction state */
-	if (!IsTransactionState())
-		return false;
-
-	/* it has to be a subtransaction */
-	if (!IsSubTransaction())
-		return false;
-
-	/* the subtransaction has to have a XID assigned */
-	if (!TransactionIdIsValid(GetCurrentTransactionIdIfAny()))
-		return false;
-
-	return true;
-}
-
-/*
- * MarkSubxactTopXidLogged
- *
- * Remember that the top transaction id for the current subtransaction is WAL
- * logged now.
- */
-void
-MarkSubxactTopXidLogged(void)
-{
-	Assert(IsSubxactTopXidLogPending());
-
-	CurrentTransactionState->topXidLogged = true;
-}
 
 /*
  *	GetStableLatestTransactionId
@@ -601,7 +534,7 @@ GetStableLatestTransactionId(void)
 		lxid = MyProc->lxid;
 		stablexid = GetTopTransactionIdIfAny();
 		if (!TransactionIdIsValid(stablexid))
-			stablexid = ReadNextTransactionId();
+			stablexid = ReadNewTransactionId();
 	}
 
 	Assert(TransactionIdIsValid(stablexid));
@@ -818,7 +751,7 @@ GetCurrentCommandId(bool used)
 	{
 		/*
 		 * Forbid setting currentCommandIdUsed in a parallel worker, because
-		 * we have no provision for communicating this back to the leader.  We
+		 * we have no provision for communicating this back to the master.  We
 		 * could relax this restriction when currentCommandIdUsed was already
 		 * true at the start of the parallel operation.
 		 */
@@ -1055,7 +988,7 @@ ExitParallelMode(void)
 /*
  *	IsInParallelMode
  *
- * Are we in a parallel operation, as either the leader or a worker?  Check
+ * Are we in a parallel operation, as either the master or a worker?  Check
  * this to prohibit operations that change backend-local state expected to
  * match across all workers.  Mere caches usually don't require such a
  * restriction.  State modified in a strict push/pop fashion, such as the
@@ -1116,9 +1049,7 @@ CommandCounterIncrement(void)
  * ForceSyncCommit
  *
  * Interface routine to allow commands to force a synchronous commit of the
- * current top-level transaction.  Currently, two-phase commit does not
- * persist and restore this variable.  So long as all callers use
- * PreventInTransactionBlock(), that omission has no consequences.
+ * current top-level transaction
  */
 void
 ForceSyncCommit(void)
@@ -1285,27 +1216,14 @@ RecordTransactionCommit(void)
 	RelFileNode *rels;
 	int			nchildren;
 	TransactionId *children;
-	int			ndroppedstats = 0;
-	xl_xact_stats_item *droppedstats = NULL;
 	int			nmsgs = 0;
 	SharedInvalidationMessage *invalMessages = NULL;
 	bool		RelcacheInitFileInval = false;
 	bool		wrote_xlog;
 
-	/*
-	 * Log pending invalidations for logical decoding of in-progress
-	 * transactions.  Normally for DDLs, we log this at each command end,
-	 * however, for certain cases where we directly update the system table
-	 * without a transaction block, the invalidations are not logged till this
-	 * time.
-	 */
-	if (XLogLogicalInfoActive())
-		LogLogicalInvalidations();
-
 	/* Get data needed for commit record */
 	nrels = smgrGetPendingDeletes(true, &rels);
 	nchildren = xactGetCommittedChildren(&children);
-	ndroppedstats = pgstat_get_transactional_drops(true, &droppedstats);
 	if (XLogStandbyInfoActive())
 		nmsgs = xactGetCommittedInvalidationMessages(&invalMessages,
 													 &RelcacheInitFileInval);
@@ -1320,12 +1238,10 @@ RecordTransactionCommit(void)
 		/*
 		 * We expect that every RelationDropStorage is followed by a catalog
 		 * update, and hence XID assignment, so we shouldn't get here with any
-		 * pending deletes. Same is true for dropping stats.
-		 *
-		 * Use a real test not just an Assert to check this, since it's a bit
-		 * fragile.
+		 * pending deletes.  Use a real test not just an Assert to check this,
+		 * since it's a bit fragile.
 		 */
-		if (nrels != 0 || ndroppedstats != 0)
+		if (nrels != 0)
 			elog(ERROR, "cannot commit a transaction that deleted files but has no xid");
 
 		/* Can't have child XIDs either; AssignTransactionId enforces this */
@@ -1387,22 +1303,21 @@ RecordTransactionCommit(void)
 		 * RecordTransactionAbort.  That's because loss of a transaction abort
 		 * is noncritical; the presumption would be that it aborted, anyway.
 		 *
-		 * It's safe to change the delayChkptFlags flag of our own backend
-		 * without holding the ProcArrayLock, since we're the only one
-		 * modifying it.  This makes checkpoint's determination of which xacts
-		 * are delaying the checkpoint a bit fuzzy, but it doesn't matter.
+		 * It's safe to change the delayChkpt flag of our own backend without
+		 * holding the ProcArrayLock, since we're the only one modifying it.
+		 * This makes checkpoint's determination of which xacts are delayChkpt
+		 * a bit fuzzy, but it doesn't matter.
 		 */
-		Assert((MyProc->delayChkptFlags & DELAY_CHKPT_START) == 0);
+		Assert(!MyProc->delayChkpt);
 		START_CRIT_SECTION();
-		MyProc->delayChkptFlags |= DELAY_CHKPT_START;
+		MyProc->delayChkpt = true;
 
 		SetCurrentTransactionStopTimestamp();
 
 		XactLogCommitRecord(xactStopTimestamp,
 							nchildren, children, nrels, rels,
-							ndroppedstats, droppedstats,
 							nmsgs, invalMessages,
-							RelcacheInitFileInval,
+							RelcacheInitFileInval, forceSyncCommit,
 							MyXactFlags,
 							InvalidTransactionId, NULL /* plain commit */ );
 
@@ -1426,7 +1341,7 @@ RecordTransactionCommit(void)
 
 		TransactionTreeSetCommitTsData(xid, nchildren, children,
 									   replorigin_session_origin_timestamp,
-									   replorigin_session_origin);
+									   replorigin_session_origin, false);
 	}
 
 	/*
@@ -1496,7 +1411,7 @@ RecordTransactionCommit(void)
 	 */
 	if (markXidCommitted)
 	{
-		MyProc->delayChkptFlags &= ~DELAY_CHKPT_START;
+		MyProc->delayChkpt = false;
 		END_CRIT_SECTION();
 	}
 
@@ -1524,8 +1439,6 @@ cleanup:
 	/* Clean up local data */
 	if (rels)
 		pfree(rels);
-	if (ndroppedstats)
-		pfree(droppedstats);
 
 	return latestXid;
 }
@@ -1706,8 +1619,6 @@ RecordTransactionAbort(bool isSubXact)
 	TransactionId latestXid;
 	int			nrels;
 	RelFileNode *rels;
-	int			ndroppedstats = 0;
-	xl_xact_stats_item *droppedstats = NULL;
 	int			nchildren;
 	TransactionId *children;
 	TimestampTz xact_time;
@@ -1744,7 +1655,6 @@ RecordTransactionAbort(bool isSubXact)
 	/* Fetch the data we need for the abort record */
 	nrels = smgrGetPendingDeletes(false, &rels);
 	nchildren = xactGetCommittedChildren(&children);
-	ndroppedstats = pgstat_get_transactional_drops(false, &droppedstats);
 
 	/* XXX do we really need a critical section here? */
 	START_CRIT_SECTION();
@@ -1761,7 +1671,6 @@ RecordTransactionAbort(bool isSubXact)
 	XactLogAbortRecord(xact_time,
 					   nchildren, children,
 					   nrels, rels,
-					   ndroppedstats, droppedstats,
 					   MyXactFlags, InvalidTransactionId,
 					   NULL);
 
@@ -1808,8 +1717,6 @@ RecordTransactionAbort(bool isSubXact)
 	/* And clean up local data */
 	if (rels)
 		pfree(rels);
-	if (ndroppedstats)
-		pfree(droppedstats);
 
 	return latestXid;
 }
@@ -2007,7 +1914,7 @@ StartTransaction(void)
 	/* Determine if statements are logged in this transaction */
 	xact_is_sampled = log_xact_sample_rate != 0 &&
 		(log_xact_sample_rate == 1 ||
-		 pg_prng_double(&pg_global_prng_state) <= log_xact_sample_rate);
+		 random() <= log_xact_sample_rate * MAX_RANDOM_VALUE);
 
 	/*
 	 * initialize current transaction state fields
@@ -2258,13 +2165,13 @@ CommitTransaction(void)
 	else
 	{
 		/*
-		 * We must not mark our XID committed; the parallel leader is
+		 * We must not mark our XID committed; the parallel master is
 		 * responsible for that.
 		 */
 		latestXid = InvalidTransactionId;
 
 		/*
-		 * Make sure the leader will know about any WAL we wrote before it
+		 * Make sure the master will know about any WAL we wrote before it
 		 * commits.
 		 */
 		ParallelWorkerReportLastRecEnd(XactLastRecEnd);
@@ -2509,6 +2416,15 @@ PrepareTransaction(void)
 		ereport(ERROR,
 				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 				 errmsg("cannot PREPARE a transaction that has exported snapshots")));
+
+	/*
+	 * Don't allow PREPARE but for transaction that has/might kill logical
+	 * replication workers.
+	 */
+	if (XactManipulatesLogicalReplicationWorkers())
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("cannot PREPARE a transaction that has manipulated logical replication workers")));
 
 	/* Prevent cancel/die interrupt while cleaning up */
 	HOLD_INTERRUPTS();
@@ -2769,9 +2685,6 @@ AbortTransaction(void)
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
 
-	/* Reset logical streaming state. */
-	ResetLogicalStreamingState();
-
 	/* Reset snapshot export state. */
 	SnapBuildResetExportedSnapshotState();
 
@@ -2806,7 +2719,7 @@ AbortTransaction(void)
 		latestXid = InvalidTransactionId;
 
 		/*
-		 * Since the parallel leader won't get our value of XactLastRecEnd in
+		 * Since the parallel master won't get our value of XactLastRecEnd in
 		 * this case, we nudge WAL-writer ourselves in this case.  See related
 		 * comments in RecordTransactionAbort for why this matters.
 		 */
@@ -2998,20 +2911,24 @@ StartTransactionCommand(void)
  * GUC system resets the characteristics at transaction end, so for example
  * just skipping the reset in StartTransaction() won't work.)
  */
+static int	save_XactIsoLevel;
+static bool save_XactReadOnly;
+static bool save_XactDeferrable;
+
 void
-SaveTransactionCharacteristics(SavedTransactionCharacteristics *s)
+SaveTransactionCharacteristics(void)
 {
-	s->save_XactIsoLevel = XactIsoLevel;
-	s->save_XactReadOnly = XactReadOnly;
-	s->save_XactDeferrable = XactDeferrable;
+	save_XactIsoLevel = XactIsoLevel;
+	save_XactReadOnly = XactReadOnly;
+	save_XactDeferrable = XactDeferrable;
 }
 
 void
-RestoreTransactionCharacteristics(const SavedTransactionCharacteristics *s)
+RestoreTransactionCharacteristics(void)
 {
-	XactIsoLevel = s->save_XactIsoLevel;
-	XactReadOnly = s->save_XactReadOnly;
-	XactDeferrable = s->save_XactDeferrable;
+	XactIsoLevel = save_XactIsoLevel;
+	XactReadOnly = save_XactReadOnly;
+	XactDeferrable = save_XactDeferrable;
 }
 
 
@@ -3022,9 +2939,9 @@ void
 CommitTransactionCommand(void)
 {
 	TransactionState s = CurrentTransactionState;
-	SavedTransactionCharacteristics savetc;
 
-	SaveTransactionCharacteristics(&savetc);
+	if (s->chain)
+		SaveTransactionCharacteristics();
 
 	switch (s->blockState)
 	{
@@ -3082,7 +2999,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics(&savetc);
+				RestoreTransactionCharacteristics();
 			}
 			break;
 
@@ -3108,7 +3025,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics(&savetc);
+				RestoreTransactionCharacteristics();
 			}
 			break;
 
@@ -3126,7 +3043,7 @@ CommitTransactionCommand(void)
 				StartTransaction();
 				s->blockState = TBLOCK_INPROGRESS;
 				s->chain = false;
-				RestoreTransactionCharacteristics(&savetc);
+				RestoreTransactionCharacteristics();
 			}
 			break;
 
@@ -3193,7 +3110,7 @@ CommitTransactionCommand(void)
 					StartTransaction();
 					s->blockState = TBLOCK_INPROGRESS;
 					s->chain = false;
-					RestoreTransactionCharacteristics(&savetc);
+					RestoreTransactionCharacteristics();
 				}
 			}
 			else if (s->blockState == TBLOCK_PREPARE)
@@ -4610,7 +4527,7 @@ RollbackAndReleaseCurrentSubTransaction(void)
 
 	/*
 	 * Unlike ReleaseCurrentSubTransaction(), this is nominally permitted
-	 * during parallel operations.  That's because we may be in the leader,
+	 * during parallel operations.  That's because we may be in the master,
 	 * recovering from an error thrown while we were in parallel mode.  We
 	 * won't reach here in a worker, because BeginInternalSubTransaction()
 	 * will have failed.
@@ -4993,6 +4910,7 @@ CommitSubTransaction(void)
 	AtEOSubXact_HashTables(true, s->nestingLevel);
 	AtEOSubXact_PgStat(true, s->nestingLevel);
 	AtSubCommit_Snapshot(s->nestingLevel);
+	AtEOSubXact_ApplyLauncher(true, s->nestingLevel);
 
 	/*
 	 * We need to restore the upper transaction's read-only state, in case the
@@ -5092,9 +5010,6 @@ AbortSubTransaction(void)
 	/* Forget about any active REINDEX. */
 	ResetReindexState(s->nestingLevel);
 
-	/* Reset logical streaming state. */
-	ResetLogicalStreamingState();
-
 	/*
 	 * No need for SnapBuildResetExportedSnapshotState() here, snapshot
 	 * exports are not supported in subtransactions.
@@ -5157,6 +5072,7 @@ AbortSubTransaction(void)
 		AtEOSubXact_HashTables(false, s->nestingLevel);
 		AtEOSubXact_PgStat(false, s->nestingLevel);
 		AtSubAbort_Snapshot(s->nestingLevel);
+		AtEOSubXact_ApplyLauncher(false, s->nestingLevel);
 	}
 
 	/*
@@ -5249,7 +5165,6 @@ PushTransaction(void)
 	GetUserIdAndSecContext(&s->prevUser, &s->prevSecContext);
 	s->prevXactReadOnly = XactReadOnly;
 	s->parallelModeLevel = 0;
-	s->topXidLogged = false;
 
 	CurrentTransactionState = s;
 
@@ -5442,7 +5357,7 @@ static void
 ShowTransactionState(const char *str)
 {
 	/* skip work if message will definitely not be printed */
-	if (message_level_is_interesting(DEBUG5))
+	if (log_min_messages <= DEBUG5 || client_min_messages <= DEBUG5)
 		ShowTransactionStateRec(str, CurrentTransactionState);
 }
 
@@ -5469,6 +5384,7 @@ ShowTransactionStateRec(const char *str, TransactionState s)
 	if (s->parent)
 		ShowTransactionStateRec(str, s->parent);
 
+	/* use ereport to suppress computation if msg will not be printed */
 	ereport(DEBUG5,
 			(errmsg_internal("%s(%d) name: %s; blockState: %s; state: %s, xid/subid/cid: %u/%u/%u%s%s",
 							 str, s->nestingLevel,
@@ -5599,9 +5515,8 @@ XLogRecPtr
 XactLogCommitRecord(TimestampTz commit_time,
 					int nsubxacts, TransactionId *subxacts,
 					int nrels, RelFileNode *rels,
-					int ndroppedstats, xl_xact_stats_item *droppedstats,
 					int nmsgs, SharedInvalidationMessage *msgs,
-					bool relcacheInval,
+					bool relcacheInval, bool forceSync,
 					int xactflags, TransactionId twophase_xid,
 					const char *twophase_gid)
 {
@@ -5610,7 +5525,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 	xl_xact_dbinfo xl_dbinfo;
 	xl_xact_subxacts xl_subxacts;
 	xl_xact_relfilenodes xl_relfilenodes;
-	xl_xact_stats_items xl_dropped_stats;
 	xl_xact_invals xl_invals;
 	xl_xact_twophase xl_twophase;
 	xl_xact_origin xl_origin;
@@ -5665,13 +5579,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_RELFILENODES;
 		xl_relfilenodes.nrels = nrels;
-		info |= XLR_SPECIAL_REL_UPDATE;
-	}
-
-	if (ndroppedstats > 0)
-	{
-		xl_xinfo.xinfo |= XACT_XINFO_HAS_DROPPED_STATS;
-		xl_dropped_stats.nitems = ndroppedstats;
 	}
 
 	if (nmsgs > 0)
@@ -5730,14 +5637,6 @@ XactLogCommitRecord(TimestampTz commit_time,
 						 nrels * sizeof(RelFileNode));
 	}
 
-	if (xl_xinfo.xinfo & XACT_XINFO_HAS_DROPPED_STATS)
-	{
-		XLogRegisterData((char *) (&xl_dropped_stats),
-						 MinSizeOfXactStatsItems);
-		XLogRegisterData((char *) droppedstats,
-						 ndroppedstats * sizeof(xl_xact_stats_item));
-	}
-
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_INVALS)
 	{
 		XLogRegisterData((char *) (&xl_invals), MinSizeOfXactInvals);
@@ -5771,7 +5670,6 @@ XLogRecPtr
 XactLogAbortRecord(TimestampTz abort_time,
 				   int nsubxacts, TransactionId *subxacts,
 				   int nrels, RelFileNode *rels,
-				   int ndroppedstats, xl_xact_stats_item *droppedstats,
 				   int xactflags, TransactionId twophase_xid,
 				   const char *twophase_gid)
 {
@@ -5779,7 +5677,6 @@ XactLogAbortRecord(TimestampTz abort_time,
 	xl_xact_xinfo xl_xinfo;
 	xl_xact_subxacts xl_subxacts;
 	xl_xact_relfilenodes xl_relfilenodes;
-	xl_xact_stats_items xl_dropped_stats;
 	xl_xact_twophase xl_twophase;
 	xl_xact_dbinfo xl_dbinfo;
 	xl_xact_origin xl_origin;
@@ -5814,13 +5711,6 @@ XactLogAbortRecord(TimestampTz abort_time,
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_RELFILENODES;
 		xl_relfilenodes.nrels = nrels;
-		info |= XLR_SPECIAL_REL_UPDATE;
-	}
-
-	if (ndroppedstats > 0)
-	{
-		xl_xinfo.xinfo |= XACT_XINFO_HAS_DROPPED_STATS;
-		xl_dropped_stats.nitems = ndroppedstats;
 	}
 
 	if (TransactionIdIsValid(twophase_xid))
@@ -5840,12 +5730,10 @@ XactLogAbortRecord(TimestampTz abort_time,
 		xl_dbinfo.tsId = MyDatabaseTableSpace;
 	}
 
-	/*
-	 * Dump transaction origin information only for abort prepared. We need
-	 * this during recovery to update the replication origin progress.
-	 */
+	/* dump transaction origin information only for abort prepared */
 	if ((replorigin_session_origin != InvalidRepOriginId) &&
-		TransactionIdIsValid(twophase_xid))
+		TransactionIdIsValid(twophase_xid) &&
+		XLogLogicalInfoActive())
 	{
 		xl_xinfo.xinfo |= XACT_XINFO_HAS_ORIGIN;
 
@@ -5884,14 +5772,6 @@ XactLogAbortRecord(TimestampTz abort_time,
 						 nrels * sizeof(RelFileNode));
 	}
 
-	if (xl_xinfo.xinfo & XACT_XINFO_HAS_DROPPED_STATS)
-	{
-		XLogRegisterData((char *) (&xl_dropped_stats),
-						 MinSizeOfXactStatsItems);
-		XLogRegisterData((char *) droppedstats,
-						 ndroppedstats * sizeof(xl_xact_stats_item));
-	}
-
 	if (xl_xinfo.xinfo & XACT_XINFO_HAS_TWOPHASE)
 	{
 		XLogRegisterData((char *) (&xl_twophase), sizeof(xl_xact_twophase));
@@ -5925,7 +5805,7 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 
 	max_xid = TransactionIdLatest(xid, parsed->nsubxacts, parsed->subxacts);
 
-	/* Make sure nextXid is beyond any XID mentioned in the record. */
+	/* Make sure nextFullXid is beyond any XID mentioned in the record. */
 	AdvanceNextFullTransactionIdPastXid(max_xid);
 
 	Assert(((parsed->xinfo & XACT_XINFO_HAS_ORIGIN) == 0) ==
@@ -5938,7 +5818,7 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 
 	/* Set the transaction commit timestamp and metadata */
 	TransactionTreeSetCommitTsData(xid, parsed->nsubxacts, parsed->subxacts,
-								   commit_time, origin_id);
+								   commit_time, origin_id, false);
 
 	if (standbyState == STANDBY_DISABLED)
 	{
@@ -6025,14 +5905,6 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
 		DropRelationFiles(parsed->xnodes, parsed->nrels, true);
 	}
 
-	if (parsed->nstats > 0)
-	{
-		/* see equivalent call for relations above */
-		XLogFlush(lsn);
-
-		pgstat_execute_transactional_drops(parsed->nstats, parsed->stats, true);
-	}
-
 	/*
 	 * We issue an XLogFlush() for the same reason we emit ForceSyncCommit()
 	 * in normal operation. For example, in CREATE DATABASE, we copy all files
@@ -6068,13 +5940,13 @@ xact_redo_commit(xl_xact_parsed_commit *parsed,
  */
 static void
 xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
-				XLogRecPtr lsn, RepOriginId origin_id)
+				XLogRecPtr lsn)
 {
 	TransactionId max_xid;
 
 	Assert(TransactionIdIsValid(xid));
 
-	/* Make sure nextXid is beyond any XID mentioned in the record. */
+	/* Make sure nextFullXid is beyond any XID mentioned in the record. */
 	max_xid = TransactionIdLatest(xid,
 								  parsed->nsubxacts,
 								  parsed->subxacts);
@@ -6117,13 +5989,6 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 			StandbyReleaseLockTree(xid, parsed->nsubxacts, parsed->subxacts);
 	}
 
-	if (parsed->xinfo & XACT_XINFO_HAS_ORIGIN)
-	{
-		/* recover apply progress */
-		replorigin_advance(origin_id, parsed->origin_lsn, lsn,
-						   false /* backward */ , false /* WAL */ );
-	}
-
 	/* Make sure files supposed to be dropped are dropped */
 	if (parsed->nrels > 0)
 	{
@@ -6134,14 +5999,6 @@ xact_redo_abort(xl_xact_parsed_abort *parsed, TransactionId xid,
 		XLogFlush(lsn);
 
 		DropRelationFiles(parsed->xnodes, parsed->nrels, true);
-	}
-
-	if (parsed->nstats > 0)
-	{
-		/* see equivalent call for relations above */
-		XLogFlush(lsn);
-
-		pgstat_execute_transactional_drops(parsed->nstats, parsed->stats, true);
 	}
 }
 
@@ -6182,8 +6039,7 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_abort parsed;
 
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		xact_redo_abort(&parsed, XLogRecGetXid(record),
-						record->EndRecPtr, XLogRecGetOrigin(record));
+		xact_redo_abort(&parsed, XLogRecGetXid(record), record->EndRecPtr);
 	}
 	else if (info == XLOG_XACT_ABORT_PREPARED)
 	{
@@ -6191,8 +6047,7 @@ xact_redo(XLogReaderState *record)
 		xl_xact_parsed_abort parsed;
 
 		ParseAbortRecord(XLogRecGetInfo(record), xlrec, &parsed);
-		xact_redo_abort(&parsed, parsed.twophase_xid,
-						record->EndRecPtr, XLogRecGetOrigin(record));
+		xact_redo_abort(&parsed, parsed.twophase_xid, record->EndRecPtr);
 
 		/* Delete TwoPhaseState gxact entry and/or 2PC file. */
 		LWLockAcquire(TwoPhaseStateLock, LW_EXCLUSIVE);
@@ -6219,13 +6074,6 @@ xact_redo(XLogReaderState *record)
 		if (standbyState >= STANDBY_INITIALIZED)
 			ProcArrayApplyXidAssignment(xlrec->xtop,
 										xlrec->nsubxacts, xlrec->xsub);
-	}
-	else if (info == XLOG_XACT_INVALIDATIONS)
-	{
-		/*
-		 * XXX we do ignore this for now, what matters are invalidations
-		 * written into the commit record.
-		 */
 	}
 	else
 		elog(PANIC, "xact_redo: unknown op code %u", info);

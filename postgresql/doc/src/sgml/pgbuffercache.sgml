@@ -24,7 +24,7 @@
  </para>
 
  <para>
-  By default, use is restricted to superusers and roles with privileges of the
+  By default, use is restricted to superusers and members of the
   <literal>pg_monitor</literal> role. Access may be granted to others
   using <command>GRANT</command>.
  </para>
@@ -96,7 +96,7 @@
       </para>
       <para>
        Fork number within the relation;  see
-       <filename>common/relpath.h</filename>
+       <filename>include/common/relpath.h</filename>
       </para></entry>
      </row>
 

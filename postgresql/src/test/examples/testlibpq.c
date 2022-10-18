@@ -43,7 +43,8 @@ main(int argc, char **argv)
 	/* Check to see that the backend connection was successfully made */
 	if (PQstatus(conn) != CONNECTION_OK)
 	{
-		fprintf(stderr, "%s", PQerrorMessage(conn));
+		fprintf(stderr, "Connection to database failed: %s",
+				PQerrorMessage(conn));
 		exit_nicely(conn);
 	}
 

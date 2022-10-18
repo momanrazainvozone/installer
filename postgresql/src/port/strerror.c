@@ -3,7 +3,7 @@
  * strerror.c
  *	  Replacements for standard strerror() and strerror_r() functions
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -118,10 +118,14 @@ get_errno_symbol(int errnum)
 			return "E2BIG";
 		case EACCES:
 			return "EACCES";
+#ifdef EADDRINUSE
 		case EADDRINUSE:
 			return "EADDRINUSE";
+#endif
+#ifdef EADDRNOTAVAIL
 		case EADDRNOTAVAIL:
 			return "EADDRNOTAVAIL";
+#endif
 		case EAFNOSUPPORT:
 			return "EAFNOSUPPORT";
 #ifdef EAGAIN
@@ -142,12 +146,16 @@ get_errno_symbol(int errnum)
 			return "EBUSY";
 		case ECHILD:
 			return "ECHILD";
+#ifdef ECONNABORTED
 		case ECONNABORTED:
 			return "ECONNABORTED";
+#endif
 		case ECONNREFUSED:
 			return "ECONNREFUSED";
+#ifdef ECONNRESET
 		case ECONNRESET:
 			return "ECONNRESET";
+#endif
 		case EDEADLK:
 			return "EDEADLK";
 		case EDOM:
@@ -158,10 +166,10 @@ get_errno_symbol(int errnum)
 			return "EFAULT";
 		case EFBIG:
 			return "EFBIG";
-		case EHOSTDOWN:
-			return "EHOSTDOWN";
+#ifdef EHOSTUNREACH
 		case EHOSTUNREACH:
 			return "EHOSTUNREACH";
+#endif
 		case EIDRM:
 			return "EIDRM";
 		case EINPROGRESS:
@@ -172,8 +180,10 @@ get_errno_symbol(int errnum)
 			return "EINVAL";
 		case EIO:
 			return "EIO";
+#ifdef EISCONN
 		case EISCONN:
 			return "EISCONN";
+#endif
 		case EISDIR:
 			return "EISDIR";
 #ifdef ELOOP
@@ -188,12 +198,6 @@ get_errno_symbol(int errnum)
 			return "EMSGSIZE";
 		case ENAMETOOLONG:
 			return "ENAMETOOLONG";
-		case ENETDOWN:
-			return "ENETDOWN";
-		case ENETRESET:
-			return "ENETRESET";
-		case ENETUNREACH:
-			return "ENETUNREACH";
 		case ENFILE:
 			return "ENFILE";
 		case ENOBUFS:
@@ -210,16 +214,20 @@ get_errno_symbol(int errnum)
 			return "ENOSPC";
 		case ENOSYS:
 			return "ENOSYS";
+#ifdef ENOTCONN
 		case ENOTCONN:
 			return "ENOTCONN";
+#endif
 		case ENOTDIR:
 			return "ENOTDIR";
 #if defined(ENOTEMPTY) && (ENOTEMPTY != EEXIST) /* same code on AIX */
 		case ENOTEMPTY:
 			return "ENOTEMPTY";
 #endif
+#ifdef ENOTSOCK
 		case ENOTSOCK:
 			return "ENOTSOCK";
+#endif
 #ifdef ENOTSUP
 		case ENOTSUP:
 			return "ENOTSUP";
@@ -250,8 +258,10 @@ get_errno_symbol(int errnum)
 #endif
 		case ESRCH:
 			return "ESRCH";
+#ifdef ETIMEDOUT
 		case ETIMEDOUT:
 			return "ETIMEDOUT";
+#endif
 #ifdef ETXTBSY
 		case ETXTBSY:
 			return "ETXTBSY";

@@ -13,9 +13,7 @@ use Time::HiRes qw(usleep);
 
 sub test_tablespace
 {
-	my ($strategy) = @_;
-
-	my $node_primary = PostgreSQL::Test::Cluster->new("primary1_$strategy");
+	my $node_primary = PostgreSQL::Test::Cluster->new("primary1");
 	$node_primary->init(allows_streaming => 1);
 	$node_primary->start;
 	$node_primary->psql(
@@ -32,7 +30,7 @@ sub test_tablespace
 	my $backup_name = 'my_backup';
 	$node_primary->backup($backup_name);
 
-	my $node_standby = PostgreSQL::Test::Cluster->new("standby2_$strategy");
+	my $node_standby = PostgreSQL::Test::Cluster->new("standby2");
 	$node_standby->init_from_backup($node_primary, $backup_name,
 		has_streaming => 1);
 	$node_standby->append_conf('postgresql.conf',
@@ -49,12 +47,12 @@ sub test_tablespace
 	# DATABASE / DROP TABLESPACE. This causes CREATE DATABASE WAL records
 	# to be applied to already-removed directories.
 	my $query = q[
-		CREATE DATABASE dropme_db1 WITH TABLESPACE dropme_ts1 STRATEGY=<STRATEGY>;
+		CREATE DATABASE dropme_db1 WITH TABLESPACE dropme_ts1;
 		CREATE TABLE t (a int) TABLESPACE dropme_ts2;
-		CREATE DATABASE dropme_db2 WITH TABLESPACE dropme_ts2 STRATEGY=<STRATEGY>;
-		CREATE DATABASE moveme_db TABLESPACE source_ts STRATEGY=<STRATEGY>;
+		CREATE DATABASE dropme_db2 WITH TABLESPACE dropme_ts2;
+		CREATE DATABASE moveme_db TABLESPACE source_ts;
 		ALTER DATABASE moveme_db SET TABLESPACE target_ts;
-		CREATE DATABASE newdb TEMPLATE template_db STRATEGY=<STRATEGY>;
+		CREATE DATABASE newdb TEMPLATE template_db;
 		ALTER DATABASE template_db IS_TEMPLATE = false;
 		DROP DATABASE dropme_db1;
 		DROP TABLE t;
@@ -62,7 +60,6 @@ sub test_tablespace
 		DROP TABLESPACE source_ts;
 		DROP DATABASE template_db;
 	];
-	$query =~ s/<STRATEGY>/$strategy/g;
 
 	$node_primary->safe_psql('postgres', $query);
 	$node_primary->wait_for_catchup($node_standby, 'write',
@@ -73,18 +70,15 @@ sub test_tablespace
 		"ALTER SYSTEM SET log_min_messages TO debug1;");
 	$node_standby->stop('immediate');
 	# Should restart ignoring directory creation error.
-	is($node_standby->start(fail_ok => 1),
-		1, "standby node started for $strategy");
+	is($node_standby->start(fail_ok => 1), 1, "standby node started");
 	$node_standby->stop('immediate');
 }
 
-test_tablespace("FILE_COPY");
-test_tablespace("WAL_LOG");
+test_tablespace();
 
 # Ensure that a missing tablespace directory during create database
 # replay immediately causes panic if the standby has already reached
-# consistent state (archive recovery is in progress).  This is
-# effective only for CREATE DATABASE WITH STRATEGY=FILE_COPY.
+# consistent state (archive recovery is in progress).
 
 my $node_primary = PostgreSQL::Test::Cluster->new('primary2');
 $node_primary->init(allows_streaming => 1);
@@ -95,9 +89,9 @@ $node_primary->safe_psql(
 	'postgres', q[
 		SET allow_in_place_tablespaces=on;
 		CREATE TABLESPACE ts1 LOCATION ''
-			]);
+	]);
 $node_primary->safe_psql('postgres',
-	"CREATE DATABASE db1 WITH TABLESPACE ts1 STRATEGY=FILE_COPY");
+	"CREATE DATABASE db1 WITH TABLESPACE ts1");
 
 # Take backup
 my $backup_name = 'my_backup';
@@ -126,7 +120,7 @@ $node_primary->safe_psql(
 	'postgres',
 	q[
 		CREATE TABLE should_not_replay_insertion(a int);
-		CREATE DATABASE db2 WITH TABLESPACE ts1 STRATEGY=FILE_COPY;
+		CREATE DATABASE db2 WITH TABLESPACE ts1;
 		INSERT INTO should_not_replay_insertion VALUES (1);
 	]);
 

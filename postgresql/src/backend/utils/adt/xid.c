@@ -3,7 +3,7 @@
  * xid.c
  *	  POSTGRES transaction identifier and command identifier datatypes.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -22,6 +22,9 @@
 #include "libpq/pqformat.h"
 #include "utils/builtins.h"
 #include "utils/xid8.h"
+
+#define PG_GETARG_TRANSACTIONID(n)	DatumGetTransactionId(PG_GETARG_DATUM(n))
+#define PG_RETURN_TRANSACTIONID(x)	return TransactionIdGetDatum(x)
 
 #define PG_GETARG_COMMANDID(n)		DatumGetCommandId(PG_GETARG_DATUM(n))
 #define PG_RETURN_COMMANDID(x)		return CommandIdGetDatum(x)
@@ -184,7 +187,7 @@ xid8in(PG_FUNCTION_ARGS)
 {
 	char	   *str = PG_GETARG_CSTRING(0);
 
-	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromU64(strtou64(str, NULL, 0)));
+	PG_RETURN_FULLTRANSACTIONID(FullTransactionIdFromU64(pg_strtouint64(str, NULL, 0)));
 }
 
 Datum
@@ -284,30 +287,6 @@ xid8cmp(PG_FUNCTION_ARGS)
 		PG_RETURN_INT32(0);
 	else
 		PG_RETURN_INT32(-1);
-}
-
-Datum
-xid8_larger(PG_FUNCTION_ARGS)
-{
-	FullTransactionId fxid1 = PG_GETARG_FULLTRANSACTIONID(0);
-	FullTransactionId fxid2 = PG_GETARG_FULLTRANSACTIONID(1);
-
-	if (FullTransactionIdFollows(fxid1, fxid2))
-		PG_RETURN_FULLTRANSACTIONID(fxid1);
-	else
-		PG_RETURN_FULLTRANSACTIONID(fxid2);
-}
-
-Datum
-xid8_smaller(PG_FUNCTION_ARGS)
-{
-	FullTransactionId fxid1 = PG_GETARG_FULLTRANSACTIONID(0);
-	FullTransactionId fxid2 = PG_GETARG_FULLTRANSACTIONID(1);
-
-	if (FullTransactionIdPrecedes(fxid1, fxid2))
-		PG_RETURN_FULLTRANSACTIONID(fxid1);
-	else
-		PG_RETURN_FULLTRANSACTIONID(fxid2);
 }
 
 /*****************************************************************************

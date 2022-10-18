@@ -8,7 +8,7 @@
  *
  * This code is released under the terms of the PostgreSQL License.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/test/regress/pg_regress.c
@@ -31,10 +31,8 @@
 
 #include "common/logging.h"
 #include "common/restricted_token.h"
-#include "common/string.h"
 #include "common/username.h"
 #include "getopt_long.h"
-#include "lib/stringinfo.h"
 #include "libpq/pqcomm.h"		/* needed for UNIXSOCK_PATH() */
 #include "pg_config_paths.h"
 #include "pg_regress.h"
@@ -122,9 +120,7 @@ static void make_directory(const char *dir);
 
 static void header(const char *fmt,...) pg_attribute_printf(1, 2);
 static void status(const char *fmt,...) pg_attribute_printf(1, 2);
-static StringInfo psql_start_command(void);
-static void psql_add_command(StringInfo buf, const char *query,...) pg_attribute_printf(2, 3);
-static void psql_end_command(StringInfo buf, const char *database);
+static void psql_command(const char *database, const char *query,...) pg_attribute_printf(2, 3);
 
 /*
  * allow core files if possible.
@@ -439,6 +435,158 @@ string_matches_pattern(const char *str, const char *pattern)
 }
 
 /*
+ * Replace all occurrences of a string in a string with a different string.
+ * NOTE: Assumes there is enough room in the target buffer!
+ */
+void
+replace_string(char *string, const char *replace, const char *replacement)
+{
+	char	   *ptr;
+
+	while ((ptr = strstr(string, replace)) != NULL)
+	{
+		char	   *dup = pg_strdup(string);
+
+		strlcpy(string, dup, ptr - string + 1);
+		strcat(string, replacement);
+		strcat(string, dup + (ptr - string) + strlen(replace));
+		free(dup);
+	}
+}
+
+/*
+ * Convert *.source found in the "source" directory, replacing certain tokens
+ * in the file contents with their intended values, and put the resulting files
+ * in the "dest" directory, replacing the ".source" prefix in their names with
+ * the given suffix.
+ */
+static void
+convert_sourcefiles_in(const char *source_subdir, const char *dest_dir, const char *dest_subdir, const char *suffix)
+{
+	char		testtablespace[MAXPGPATH];
+	char		indir[MAXPGPATH];
+	struct stat st;
+	int			ret;
+	char	  **name;
+	char	  **names;
+	int			count = 0;
+
+	snprintf(indir, MAXPGPATH, "%s/%s", inputdir, source_subdir);
+
+	/* Check that indir actually exists and is a directory */
+	ret = stat(indir, &st);
+	if (ret != 0 || !S_ISDIR(st.st_mode))
+	{
+		/*
+		 * No warning, to avoid noise in tests that do not have these
+		 * directories; for example, ecpg, contrib and src/pl.
+		 */
+		return;
+	}
+
+	names = pgfnames(indir);
+	if (!names)
+		/* Error logged in pgfnames */
+		exit(2);
+
+	snprintf(testtablespace, MAXPGPATH, "%s/testtablespace", outputdir);
+
+#ifdef WIN32
+
+	/*
+	 * On Windows only, clean out the test tablespace dir, or create it if it
+	 * doesn't exist.  On other platforms we expect the Makefile to take care
+	 * of that.  (We don't migrate that functionality in here because it'd be
+	 * harder to cope with platform-specific issues such as SELinux.)
+	 *
+	 * XXX it would be better if pg_regress.c had nothing at all to do with
+	 * testtablespace, and this were handled by a .BAT file or similar on
+	 * Windows.  See pgsql-hackers discussion of 2008-01-18.
+	 */
+	if (directory_exists(testtablespace))
+		if (!rmtree(testtablespace, true))
+		{
+			fprintf(stderr, _("\n%s: could not remove test tablespace \"%s\"\n"),
+					progname, testtablespace);
+			exit(2);
+		}
+	make_directory(testtablespace);
+#endif
+
+	/* finally loop on each file and do the replacement */
+	for (name = names; *name; name++)
+	{
+		char		srcfile[MAXPGPATH];
+		char		destfile[MAXPGPATH];
+		char		prefix[MAXPGPATH];
+		FILE	   *infile,
+				   *outfile;
+		char		line[1024];
+
+		/* reject filenames not finishing in ".source" */
+		if (strlen(*name) < 8)
+			continue;
+		if (strcmp(*name + strlen(*name) - 7, ".source") != 0)
+			continue;
+
+		count++;
+
+		/* build the full actual paths to open */
+		snprintf(prefix, strlen(*name) - 6, "%s", *name);
+		snprintf(srcfile, MAXPGPATH, "%s/%s", indir, *name);
+		snprintf(destfile, MAXPGPATH, "%s/%s/%s.%s", dest_dir, dest_subdir,
+				 prefix, suffix);
+
+		infile = fopen(srcfile, "r");
+		if (!infile)
+		{
+			fprintf(stderr, _("%s: could not open file \"%s\" for reading: %s\n"),
+					progname, srcfile, strerror(errno));
+			exit(2);
+		}
+		outfile = fopen(destfile, "w");
+		if (!outfile)
+		{
+			fprintf(stderr, _("%s: could not open file \"%s\" for writing: %s\n"),
+					progname, destfile, strerror(errno));
+			exit(2);
+		}
+		while (fgets(line, sizeof(line), infile))
+		{
+			replace_string(line, "@abs_srcdir@", inputdir);
+			replace_string(line, "@abs_builddir@", outputdir);
+			replace_string(line, "@testtablespace@", testtablespace);
+			replace_string(line, "@libdir@", dlpath);
+			replace_string(line, "@DLSUFFIX@", DLSUFFIX);
+			fputs(line, outfile);
+		}
+		fclose(infile);
+		fclose(outfile);
+	}
+
+	/*
+	 * If we didn't process any files, complain because it probably means
+	 * somebody neglected to pass the needed --inputdir argument.
+	 */
+	if (count <= 0)
+	{
+		fprintf(stderr, _("%s: no *.source files found in \"%s\"\n"),
+				progname, indir);
+		exit(2);
+	}
+
+	pgfnames_cleanup(names);
+}
+
+/* Create the .sql and .out files from the .source files, if any */
+static void
+convert_sourcefiles(void)
+{
+	convert_sourcefiles_in("input", outputdir, "sql", "sql");
+	convert_sourcefiles_in("output", outputdir, "expected", "out");
+}
+
+/*
  * Scan resultmap file to find which platform-specific expected files to use.
  *
  * The format of each line of the file is
@@ -560,24 +708,28 @@ get_expectfile(const char *testname, const char *file)
 }
 
 /*
+ * Handy subroutine for setting an environment variable "var" to "val"
+ */
+static void
+doputenv(const char *var, const char *val)
+{
+	char	   *s;
+
+	s = psprintf("%s=%s", var, val);
+	putenv(s);
+}
+
+/*
  * Prepare environment variables for running regression tests
  */
 static void
 initialize_environment(void)
 {
 	/*
-	 * Set default application_name.  (The test_start_function may choose to
+	 * Set default application_name.  (The test_function may choose to
 	 * override this, but if it doesn't, we have something useful in place.)
 	 */
-	setenv("PGAPPNAME", "pg_regress", 1);
-
-	/*
-	 * Set variables that the test scripts may need to refer to.
-	 */
-	setenv("PG_ABS_SRCDIR", inputdir, 1);
-	setenv("PG_ABS_BUILDDIR", outputdir, 1);
-	setenv("PG_LIBDIR", dlpath, 1);
-	setenv("PG_DLSUFFIX", DLSUFFIX, 1);
+	putenv("PGAPPNAME=pg_regress");
 
 	if (nolocale)
 	{
@@ -600,7 +752,7 @@ initialize_environment(void)
 		 * variables unset; see PostmasterMain().
 		 */
 #if defined(WIN32) || defined(__CYGWIN__) || defined(__darwin__)
-		setenv("LANG", "C", 1);
+		putenv("LANG=C");
 #endif
 	}
 
@@ -612,21 +764,21 @@ initialize_environment(void)
 	 */
 	unsetenv("LANGUAGE");
 	unsetenv("LC_ALL");
-	setenv("LC_MESSAGES", "C", 1);
+	putenv("LC_MESSAGES=C");
 
 	/*
 	 * Set encoding as requested
 	 */
 	if (encoding)
-		setenv("PGCLIENTENCODING", encoding, 1);
+		doputenv("PGCLIENTENCODING", encoding);
 	else
 		unsetenv("PGCLIENTENCODING");
 
 	/*
 	 * Set timezone and datestyle for datetime-related tests
 	 */
-	setenv("PGTZ", "PST8PDT", 1);
-	setenv("PGDATESTYLE", "Postgres, MDY", 1);
+	putenv("PGTZ=PST8PDT");
+	putenv("PGDATESTYLE=Postgres, MDY");
 
 	/*
 	 * Likewise set intervalstyle to ensure consistent results.  This is a bit
@@ -640,10 +792,9 @@ initialize_environment(void)
 
 		if (!old_pgoptions)
 			old_pgoptions = "";
-		new_pgoptions = psprintf("%s %s",
+		new_pgoptions = psprintf("PGOPTIONS=%s %s",
 								 old_pgoptions, my_pgoptions);
-		setenv("PGOPTIONS", new_pgoptions, 1);
-		free(new_pgoptions);
+		putenv(new_pgoptions);
 	}
 
 	if (temp_instance)
@@ -655,7 +806,7 @@ initialize_environment(void)
 		 * won't mess things up.)  Also, set PGPORT to the temp port, and set
 		 * PGHOST depending on whether we are using TCP or Unix sockets.
 		 *
-		 * This list should be kept in sync with PostgreSQL/Test/Utils.pm.
+		 * This list should be kept in sync with TestLib.pm.
 		 */
 		unsetenv("PGCHANNELBINDING");
 		/* PGCLIENTENCODING, see above */
@@ -674,13 +825,11 @@ initialize_environment(void)
 		unsetenv("PGSERVICEFILE");
 		unsetenv("PGSSLCERT");
 		unsetenv("PGSSLCRL");
-		unsetenv("PGSSLCRLDIR");
 		unsetenv("PGSSLKEY");
 		unsetenv("PGSSLMAXPROTOCOLVERSION");
 		unsetenv("PGSSLMINPROTOCOLVERSION");
 		unsetenv("PGSSLMODE");
 		unsetenv("PGSSLROOTCERT");
-		unsetenv("PGSSLSNI");
 		unsetenv("PGTARGETSESSIONATTRS");
 		unsetenv("PGUSER");
 		/* PGPORT, see below */
@@ -688,17 +837,17 @@ initialize_environment(void)
 
 #ifdef HAVE_UNIX_SOCKETS
 		if (hostname != NULL)
-			setenv("PGHOST", hostname, 1);
+			doputenv("PGHOST", hostname);
 		else
 		{
 			sockdir = getenv("PG_REGRESS_SOCK_DIR");
 			if (!sockdir)
 				sockdir = make_temp_sockdir();
-			setenv("PGHOST", sockdir, 1);
+			doputenv("PGHOST", sockdir);
 		}
 #else
 		Assert(hostname != NULL);
-		setenv("PGHOST", hostname, 1);
+		doputenv("PGHOST", hostname);
 #endif
 		unsetenv("PGHOSTADDR");
 		if (port != -1)
@@ -706,7 +855,7 @@ initialize_environment(void)
 			char		s[16];
 
 			sprintf(s, "%d", port);
-			setenv("PGPORT", s, 1);
+			doputenv("PGPORT", s);
 		}
 	}
 	else
@@ -720,7 +869,7 @@ initialize_environment(void)
 		 */
 		if (hostname != NULL)
 		{
-			setenv("PGHOST", hostname, 1);
+			doputenv("PGHOST", hostname);
 			unsetenv("PGHOSTADDR");
 		}
 		if (port != -1)
@@ -728,10 +877,10 @@ initialize_environment(void)
 			char		s[16];
 
 			sprintf(s, "%d", port);
-			setenv("PGPORT", s, 1);
+			doputenv("PGPORT", s);
 		}
 		if (user != NULL)
-			setenv("PGUSER", user, 1);
+			doputenv("PGUSER", user);
 
 		/*
 		 * However, we *don't* honor PGDATABASE, since we certainly don't wish
@@ -767,6 +916,7 @@ initialize_environment(void)
 			printf(_("(using postmaster on Unix socket, default port)\n"));
 	}
 
+	convert_sourcefiles();
 	load_resultmap();
 }
 
@@ -780,7 +930,7 @@ fmtHba(const char *raw)
 	const char *rp;
 	char	   *wp;
 
-	wp = ret = pg_realloc(ret, 3 + strlen(raw) * 2);
+	wp = ret = realloc(ret, 3 + strlen(raw) * 2);
 
 	*wp++ = '"';
 	for (rp = raw; *rp; rp++)
@@ -976,93 +1126,50 @@ config_sspi_auth(const char *pgdata, const char *superuser_name)
 #endif							/* ENABLE_SSPI */
 
 /*
- * psql_start_command, psql_add_command, psql_end_command
- *
- * Issue one or more commands within one psql call.
- * Set up with psql_start_command, then add commands one at a time
- * with psql_add_command, and finally execute with psql_end_command.
+ * Issue a command via psql, connecting to the specified database
  *
  * Since we use system(), this doesn't return until the operation finishes
  */
-static StringInfo
-psql_start_command(void)
-{
-	StringInfo	buf = makeStringInfo();
-
-	appendStringInfo(buf,
-					 "\"%s%spsql\" -X",
-					 bindir ? bindir : "",
-					 bindir ? "/" : "");
-	return buf;
-}
-
 static void
-psql_add_command(StringInfo buf, const char *query,...)
+psql_command(const char *database, const char *query,...)
 {
-	StringInfoData cmdbuf;
-	const char *cmdptr;
-
-	/* Add each command as a -c argument in the psql call */
-	appendStringInfoString(buf, " -c \"");
+	char		query_formatted[1024];
+	char		query_escaped[2048];
+	char		psql_cmd[MAXPGPATH + 2048];
+	va_list		args;
+	char	   *s;
+	char	   *d;
 
 	/* Generate the query with insertion of sprintf arguments */
-	initStringInfo(&cmdbuf);
-	for (;;)
-	{
-		va_list		args;
-		int			needed;
-
-		va_start(args, query);
-		needed = appendStringInfoVA(&cmdbuf, query, args);
-		va_end(args);
-		if (needed == 0)
-			break;				/* success */
-		enlargeStringInfo(&cmdbuf, needed);
-	}
+	va_start(args, query);
+	vsnprintf(query_formatted, sizeof(query_formatted), query, args);
+	va_end(args);
 
 	/* Now escape any shell double-quote metacharacters */
-	for (cmdptr = cmdbuf.data; *cmdptr; cmdptr++)
+	d = query_escaped;
+	for (s = query_formatted; *s; s++)
 	{
-		if (strchr("\\\"$`", *cmdptr))
-			appendStringInfoChar(buf, '\\');
-		appendStringInfoChar(buf, *cmdptr);
+		if (strchr("\\\"$`", *s))
+			*d++ = '\\';
+		*d++ = *s;
 	}
+	*d = '\0';
 
-	appendStringInfoChar(buf, '"');
+	/* And now we can build and execute the shell command */
+	snprintf(psql_cmd, sizeof(psql_cmd),
+			 "\"%s%spsql\" -X -c \"%s\" \"%s\"",
+			 bindir ? bindir : "",
+			 bindir ? "/" : "",
+			 query_escaped,
+			 database);
 
-	pfree(cmdbuf.data);
-}
-
-static void
-psql_end_command(StringInfo buf, const char *database)
-{
-	/* Add the database name --- assume it needs no extra escaping */
-	appendStringInfo(buf,
-					 " \"%s\"",
-					 database);
-
-	/* And now we can execute the shell command */
-	if (system(buf->data) != 0)
+	if (system(psql_cmd) != 0)
 	{
 		/* psql probably already reported the error */
-		fprintf(stderr, _("command failed: %s\n"), buf->data);
+		fprintf(stderr, _("command failed: %s\n"), psql_cmd);
 		exit(2);
 	}
-
-	/* Clean up */
-	pfree(buf->data);
-	pfree(buf);
 }
-
-/*
- * Shorthand macro for the common case of a single command
- */
-#define psql_command(database, ...) \
-	do { \
-		StringInfo cmdbuf = psql_start_command(); \
-		psql_add_command(cmdbuf, __VA_ARGS__); \
-		psql_end_command(cmdbuf, database); \
-	} while (0)
 
 /*
  * Spawn a process to execute the given shell command; don't wait for it
@@ -1083,10 +1190,6 @@ spawn_process(const char *cmdline)
 	fflush(stderr);
 	if (logfile)
 		fflush(logfile);
-
-#ifdef EXEC_BACKEND
-	pg_disable_aslr();
-#endif
 
 	pid = fork();
 	if (pid == -1)
@@ -1535,8 +1638,7 @@ log_child_failure(int exitstatus)
  * Run all the tests specified in one schedule file
  */
 static void
-run_schedule(const char *schedule, test_start_function startfunc,
-			 postprocess_result_function postfunc)
+run_schedule(const char *schedule, test_function tfunc)
 {
 #define MAX_PARALLEL_TESTS 100
 	char	   *tests[MAX_PARALLEL_TESTS];
@@ -1650,7 +1752,7 @@ run_schedule(const char *schedule, test_start_function startfunc,
 		if (num_tests == 1)
 		{
 			status(_("test %-28s ... "), tests[0]);
-			pids[0] = (startfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
+			pids[0] = (tfunc) (tests[0], &resultfiles[0], &expectfiles[0], &tags[0]);
 			INSTR_TIME_SET_CURRENT(starttimes[0]);
 			wait_for_tests(pids, statuses, stoptimes, NULL, 1);
 			/* status line is finished below */
@@ -1676,7 +1778,7 @@ run_schedule(const char *schedule, test_start_function startfunc,
 								   tests + oldest, i - oldest);
 					oldest = i;
 				}
-				pids[i] = (startfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids + oldest, statuses + oldest,
@@ -1689,7 +1791,7 @@ run_schedule(const char *schedule, test_start_function startfunc,
 			status(_("parallel group (%d tests): "), num_tests);
 			for (i = 0; i < num_tests; i++)
 			{
-				pids[i] = (startfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
+				pids[i] = (tfunc) (tests[i], &resultfiles[i], &expectfiles[i], &tags[i]);
 				INSTR_TIME_SET_CURRENT(starttimes[i]);
 			}
 			wait_for_tests(pids, statuses, stoptimes, tests, num_tests);
@@ -1721,8 +1823,6 @@ run_schedule(const char *schedule, test_start_function startfunc,
 			{
 				bool		newdiff;
 
-				if (postfunc)
-					(*postfunc) (rl->str);
 				newdiff = results_differ(tests[i], rl->str, el->str);
 				if (newdiff && tl)
 				{
@@ -1789,8 +1889,7 @@ run_schedule(const char *schedule, test_start_function startfunc,
  * Run a single test
  */
 static void
-run_single_test(const char *test, test_start_function startfunc,
-				postprocess_result_function postfunc)
+run_single_test(const char *test, test_function tfunc)
 {
 	PID_TYPE	pid;
 	instr_time	starttime;
@@ -1805,7 +1904,7 @@ run_single_test(const char *test, test_start_function startfunc,
 	bool		differ = false;
 
 	status(_("test %-28s ... "), test);
-	pid = (startfunc) (test, &resultfiles, &expectfiles, &tags);
+	pid = (tfunc) (test, &resultfiles, &expectfiles, &tags);
 	INSTR_TIME_SET_CURRENT(starttime);
 	wait_for_tests(&pid, &exit_status, &stoptime, NULL, 1);
 
@@ -1823,8 +1922,6 @@ run_single_test(const char *test, test_start_function startfunc,
 	{
 		bool		newdiff;
 
-		if (postfunc)
-			(*postfunc) (rl->str);
 		newdiff = results_differ(test, rl->str, el->str);
 		if (newdiff && tl)
 		{
@@ -1899,19 +1996,13 @@ open_result_files(void)
 static void
 drop_database_if_exists(const char *dbname)
 {
-	StringInfo	buf = psql_start_command();
-
 	header(_("dropping database \"%s\""), dbname);
-	/* Set warning level so we don't see chatter about nonexistent DB */
-	psql_add_command(buf, "SET client_min_messages = warning");
-	psql_add_command(buf, "DROP DATABASE IF EXISTS \"%s\"", dbname);
-	psql_end_command(buf, "postgres");
+	psql_command("postgres", "DROP DATABASE IF EXISTS \"%s\"", dbname);
 }
 
 static void
 create_database(const char *dbname)
 {
-	StringInfo	buf = psql_start_command();
 	_stringlist *sl;
 
 	/*
@@ -1920,20 +2011,19 @@ create_database(const char *dbname)
 	 */
 	header(_("creating database \"%s\""), dbname);
 	if (encoding)
-		psql_add_command(buf, "CREATE DATABASE \"%s\" TEMPLATE=template0 ENCODING='%s'%s", dbname, encoding,
-						 (nolocale) ? " LC_COLLATE='C' LC_CTYPE='C'" : "");
+		psql_command("postgres", "CREATE DATABASE \"%s\" TEMPLATE=template0 ENCODING='%s'%s", dbname, encoding,
+					 (nolocale) ? " LC_COLLATE='C' LC_CTYPE='C'" : "");
 	else
-		psql_add_command(buf, "CREATE DATABASE \"%s\" TEMPLATE=template0%s", dbname,
-						 (nolocale) ? " LC_COLLATE='C' LC_CTYPE='C'" : "");
-	psql_add_command(buf,
-					 "ALTER DATABASE \"%s\" SET lc_messages TO 'C';"
-					 "ALTER DATABASE \"%s\" SET lc_monetary TO 'C';"
-					 "ALTER DATABASE \"%s\" SET lc_numeric TO 'C';"
-					 "ALTER DATABASE \"%s\" SET lc_time TO 'C';"
-					 "ALTER DATABASE \"%s\" SET bytea_output TO 'hex';"
-					 "ALTER DATABASE \"%s\" SET timezone_abbreviations TO 'Default';",
-					 dbname, dbname, dbname, dbname, dbname, dbname);
-	psql_end_command(buf, "postgres");
+		psql_command("postgres", "CREATE DATABASE \"%s\" TEMPLATE=template0%s", dbname,
+					 (nolocale) ? " LC_COLLATE='C' LC_CTYPE='C'" : "");
+	psql_command(dbname,
+				 "ALTER DATABASE \"%s\" SET lc_messages TO 'C';"
+				 "ALTER DATABASE \"%s\" SET lc_monetary TO 'C';"
+				 "ALTER DATABASE \"%s\" SET lc_numeric TO 'C';"
+				 "ALTER DATABASE \"%s\" SET lc_time TO 'C';"
+				 "ALTER DATABASE \"%s\" SET bytea_output TO 'hex';"
+				 "ALTER DATABASE \"%s\" SET timezone_abbreviations TO 'Default';",
+				 dbname, dbname, dbname, dbname, dbname, dbname);
 
 	/*
 	 * Install any requested extensions.  We use CREATE IF NOT EXISTS so that
@@ -1949,28 +2039,20 @@ create_database(const char *dbname)
 static void
 drop_role_if_exists(const char *rolename)
 {
-	StringInfo	buf = psql_start_command();
-
 	header(_("dropping role \"%s\""), rolename);
-	/* Set warning level so we don't see chatter about nonexistent role */
-	psql_add_command(buf, "SET client_min_messages = warning");
-	psql_add_command(buf, "DROP ROLE IF EXISTS \"%s\"", rolename);
-	psql_end_command(buf, "postgres");
+	psql_command("postgres", "DROP ROLE IF EXISTS \"%s\"", rolename);
 }
 
 static void
 create_role(const char *rolename, const _stringlist *granted_dbs)
 {
-	StringInfo	buf = psql_start_command();
-
 	header(_("creating role \"%s\""), rolename);
-	psql_add_command(buf, "CREATE ROLE \"%s\" WITH LOGIN", rolename);
+	psql_command("postgres", "CREATE ROLE \"%s\" WITH LOGIN", rolename);
 	for (; granted_dbs != NULL; granted_dbs = granted_dbs->next)
 	{
-		psql_add_command(buf, "GRANT ALL ON DATABASE \"%s\" TO \"%s\"",
-						 granted_dbs->str, rolename);
+		psql_command("postgres", "GRANT ALL ON DATABASE \"%s\" TO \"%s\"",
+					 granted_dbs->str, rolename);
 	}
-	psql_end_command(buf, "postgres");
 }
 
 static void
@@ -2023,10 +2105,7 @@ help(void)
 }
 
 int
-regression_main(int argc, char *argv[],
-				init_function ifunc,
-				test_start_function startfunc,
-				postprocess_result_function postfunc)
+regression_main(int argc, char *argv[], init_function ifunc, test_function tfunc)
 {
 	static struct option long_options[] = {
 		{"help", no_argument, NULL, 'h'},
@@ -2363,7 +2442,7 @@ regression_main(int argc, char *argv[],
 				fprintf(stderr, _("port %d apparently in use, trying %d\n"), port, port + 1);
 				port++;
 				sprintf(s, "%d", port);
-				setenv("PGPORT", s, 1);
+				doputenv("PGPORT", s);
 			}
 			else
 				break;
@@ -2497,12 +2576,12 @@ regression_main(int argc, char *argv[],
 
 	for (sl = schedulelist; sl != NULL; sl = sl->next)
 	{
-		run_schedule(sl->str, startfunc, postfunc);
+		run_schedule(sl->str, tfunc);
 	}
 
 	for (sl = extra_tests; sl != NULL; sl = sl->next)
 	{
-		run_single_test(sl->str, startfunc, postfunc);
+		run_single_test(sl->str, tfunc);
 	}
 
 	/*

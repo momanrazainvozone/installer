@@ -4,7 +4,7 @@
  *	  prototypes for functions in backend/catalog/namespace.c
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/catalog/namespace.h
@@ -30,7 +30,6 @@ typedef struct _FuncCandidateList
 	struct _FuncCandidateList *next;
 	int			pathpos;		/* for internal use of namespace lookup */
 	Oid			oid;			/* the function or operator's OID */
-	int			nominalnargs;	/* either pronargs or length(proallargtypes) */
 	int			nargs;			/* number of arg types returned */
 	int			nvargs;			/* number of args to become variadic array */
 	int			ndargs;			/* number of defaulted args */
@@ -100,7 +99,6 @@ extern FuncCandidateList FuncnameGetCandidates(List *names,
 											   int nargs, List *argnames,
 											   bool expand_variadic,
 											   bool expand_defaults,
-											   bool include_out_arguments,
 											   bool missing_ok);
 extern bool FunctionIsVisible(Oid funcid);
 
@@ -182,7 +180,7 @@ extern void AtEOSubXact_Namespace(bool isCommit, SubTransactionId mySubid,
 								  SubTransactionId parentSubid);
 
 /* stuff for search_path GUC variable */
-extern PGDLLIMPORT char *namespace_search_path;
+extern char *namespace_search_path;
 
 extern List *fetch_search_path(bool includeImplicit);
 extern int	fetch_search_path_array(Oid *sarray, int sarray_len);

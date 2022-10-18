@@ -2,7 +2,7 @@
  *
  * pgbench.h
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *-------------------------------------------------------------------------
@@ -99,8 +99,7 @@ typedef enum PgBenchFunction
 	PGBENCH_IS,
 	PGBENCH_CASE,
 	PGBENCH_HASH_FNV1A,
-	PGBENCH_HASH_MURMUR2,
-	PGBENCH_PERMUTE
+	PGBENCH_HASH_MURMUR2
 } PgBenchFunction;
 
 typedef struct PgBenchExpr PgBenchExpr;

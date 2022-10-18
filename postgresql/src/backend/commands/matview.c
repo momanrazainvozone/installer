@@ -3,7 +3,7 @@
  * matview.c
  *	  materialized view support
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -297,9 +297,8 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	 * it against access by any other process until commit (by which time it
 	 * will be gone).
 	 */
-	OIDNewHeap = make_new_heap(matviewOid, tableSpace,
-							   matviewRel->rd_rel->relam,
-							   relpersistence, ExclusiveLock);
+	OIDNewHeap = make_new_heap(matviewOid, tableSpace, relpersistence,
+							   ExclusiveLock);
 	LockRelationOid(OIDNewHeap, AccessExclusiveLock);
 	dest = CreateTransientRelDestReceiver(OIDNewHeap);
 
@@ -330,10 +329,10 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 		refresh_by_heap_swap(matviewOid, OIDNewHeap, relpersistence);
 
 		/*
-		 * Inform cumulative stats system about our activity: basically, we
-		 * truncated the matview and inserted some new data.  (The concurrent
-		 * code path above doesn't need to worry about this because the
-		 * inserts and deletes it issues get counted by lower-level code.)
+		 * Inform stats collector about our activity: basically, we truncated
+		 * the matview and inserted some new data.  (The concurrent code path
+		 * above doesn't need to worry about this because the inserts and
+		 * deletes it issues get counted by lower-level code.)
 		 */
 		pgstat_count_truncate(matviewRel);
 		if (!stmt->skipData)
@@ -349,17 +348,6 @@ ExecRefreshMatView(RefreshMatViewStmt *stmt, const char *queryString,
 	SetUserIdAndSecContext(save_userid, save_sec_context);
 
 	ObjectAddressSet(address, RelationRelationId, matviewOid);
-
-	/*
-	 * Save the rowcount so that pg_stat_statements can track the total number
-	 * of rows processed by REFRESH MATERIALIZED VIEW command. Note that we
-	 * still don't display the rowcount in the command completion tag output,
-	 * i.e., the display_rowcount flag of CMDTAG_REFRESH_MATERIALIZED_VIEW
-	 * command tag is left false in cmdtaglist.h. Otherwise, the change of
-	 * completion tag output might break applications using it.
-	 */
-	if (qc)
-		SetQueryCompletion(qc, CMDTAG_REFRESH_MATERIALIZED_VIEW, processed);
 
 	return address;
 }
@@ -396,7 +384,7 @@ refresh_matview_datafill(DestReceiver *dest, Query *query,
 	CHECK_FOR_INTERRUPTS();
 
 	/* Plan the query which will generate data for the refresh. */
-	plan = pg_plan_query(query, queryString, CURSOR_OPT_PARALLEL_OK, NULL);
+	plan = pg_plan_query(query, queryString, 0, NULL);
 
 	/*
 	 * Use a snapshot with an updated command ID to ensure this query sees

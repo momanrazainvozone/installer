@@ -2,7 +2,7 @@
  * ginblock.h
  *	  details of structures stored in GIN index blocks
  *
- *	Copyright (c) 2006-2022, PostgreSQL Global Development Group
+ *	Copyright (c) 2006-2020, PostgreSQL Global Development Group
  *
  *	src/include/access/ginblock.h
  *--------------------------------------------------------------------------
@@ -12,7 +12,6 @@
 
 #include "access/transam.h"
 #include "storage/block.h"
-#include "storage/bufpage.h"
 #include "storage/itemptr.h"
 #include "storage/off.h"
 
@@ -135,7 +134,8 @@ typedef struct GinMetaPageData
  */
 #define GinPageGetDeleteXid(page) ( ((PageHeader) (page))->pd_prune_xid )
 #define GinPageSetDeleteXid(page, xid) ( ((PageHeader) (page))->pd_prune_xid = xid)
-extern bool GinPageIsRecyclable(Page page);
+#define GinPageIsRecyclable(page) ( PageIsNew(page) || (GinPageIsDeleted(page) \
+	&& TransactionIdPrecedes(GinPageGetDeleteXid(page), RecentGlobalXmin)))
 
 /*
  * We use our own ItemPointerGet(BlockNumber|OffsetNumber)

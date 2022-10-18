@@ -13,7 +13,7 @@
  * "delta" type.  Delta rows will be deleted by this worker and their values
  * aggregated into the total.
  *
- * Copyright (c) 2013-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		src/test/modules/worker_spi/worker_spi.c
@@ -25,7 +25,6 @@
 /* These are always necessary for a bgworker */
 #include "miscadmin.h"
 #include "postmaster/bgworker.h"
-#include "postmaster/interrupt.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/lwlock.h"
@@ -49,6 +48,10 @@ PG_FUNCTION_INFO_V1(worker_spi_launch);
 void		_PG_init(void);
 void		worker_spi_main(Datum) pg_attribute_noreturn();
 
+/* flags set by signal handlers */
+static volatile sig_atomic_t got_sighup = false;
+static volatile sig_atomic_t got_sigterm = false;
+
 /* GUC variables */
 static int	worker_spi_naptime = 10;
 static int	worker_spi_total_workers = 2;
@@ -60,6 +63,38 @@ typedef struct worktable
 	const char *schema;
 	const char *name;
 } worktable;
+
+/*
+ * Signal handler for SIGTERM
+ *		Set a flag to let the main loop to terminate, and set our latch to wake
+ *		it up.
+ */
+static void
+worker_spi_sigterm(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sigterm = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
+
+/*
+ * Signal handler for SIGHUP
+ *		Set a flag to tell the main loop to reread the config file, and set
+ *		our latch to wake it up.
+ */
+static void
+worker_spi_sighup(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	got_sighup = true;
+	SetLatch(MyLatch);
+
+	errno = save_errno;
+}
 
 /*
  * Initialize workspace for a worker process: create the schema if it doesn't
@@ -84,7 +119,6 @@ initialize_worker_spi(worktable *table)
 	appendStringInfo(&buf, "select count(*) from pg_namespace where nspname = '%s'",
 					 table->schema);
 
-	debug_query_string = buf.data;
 	ret = SPI_execute(buf.data, true, 0);
 	if (ret != SPI_OK_SELECT)
 		elog(FATAL, "SPI_execute failed: error code %d", ret);
@@ -100,7 +134,6 @@ initialize_worker_spi(worktable *table)
 
 	if (ntup == 0)
 	{
-		debug_query_string = NULL;
 		resetStringInfo(&buf);
 		appendStringInfo(&buf,
 						 "CREATE SCHEMA \"%s\" "
@@ -114,19 +147,15 @@ initialize_worker_spi(worktable *table)
 		/* set statement start time */
 		SetCurrentStatementStartTimestamp();
 
-		debug_query_string = buf.data;
 		ret = SPI_execute(buf.data, false, 0);
 
 		if (ret != SPI_OK_UTILITY)
 			elog(FATAL, "failed to create my schema");
-
-		debug_query_string = NULL;	/* rest is not statement-specific */
 	}
 
 	SPI_finish();
 	PopActiveSnapshot();
 	CommitTransactionCommand();
-	debug_query_string = NULL;
 	pgstat_report_activity(STATE_IDLE, NULL);
 }
 
@@ -144,8 +173,8 @@ worker_spi_main(Datum main_arg)
 	table->name = pstrdup("counted");
 
 	/* Establish signal handlers before unblocking signals. */
-	pqsignal(SIGHUP, SignalHandlerForConfigReload);
-	pqsignal(SIGTERM, die);
+	pqsignal(SIGHUP, worker_spi_sighup);
+	pqsignal(SIGTERM, worker_spi_sigterm);
 
 	/* We're now ready to receive signals */
 	BackgroundWorkerUnblockSignals();
@@ -184,10 +213,9 @@ worker_spi_main(Datum main_arg)
 					 table->name);
 
 	/*
-	 * Main loop: do this until SIGTERM is received and processed by
-	 * ProcessInterrupts.
+	 * Main loop: do this until the SIGTERM handler tells us to terminate
 	 */
-	for (;;)
+	while (!got_sigterm)
 	{
 		int			ret;
 
@@ -208,9 +236,9 @@ worker_spi_main(Datum main_arg)
 		/*
 		 * In case of a SIGHUP, just reload the configuration.
 		 */
-		if (ConfigReloadPending)
+		if (got_sighup)
 		{
-			ConfigReloadPending = false;
+			got_sighup = false;
 			ProcessConfigFile(PGC_SIGHUP);
 		}
 
@@ -234,7 +262,6 @@ worker_spi_main(Datum main_arg)
 		StartTransactionCommand();
 		SPI_connect();
 		PushActiveSnapshot(GetTransactionSnapshot());
-		debug_query_string = buf.data;
 		pgstat_report_activity(STATE_RUNNING, buf.data);
 
 		/* We can now execute queries via SPI */
@@ -264,12 +291,11 @@ worker_spi_main(Datum main_arg)
 		SPI_finish();
 		PopActiveSnapshot();
 		CommitTransactionCommand();
-		debug_query_string = NULL;
-		pgstat_report_stat(true);
+		pgstat_report_stat(false);
 		pgstat_report_activity(STATE_IDLE, NULL);
 	}
 
-	/* Not reachable */
+	proc_exit(1);
 }
 
 /*
@@ -282,6 +308,7 @@ void
 _PG_init(void)
 {
 	BackgroundWorker worker;
+	unsigned int i;
 
 	/* get the configuration */
 	DefineCustomIntVariable("worker_spi.naptime",
@@ -322,8 +349,6 @@ _PG_init(void)
 							   0,
 							   NULL, NULL, NULL);
 
-	MarkGUCPrefixReserved("worker_spi");
-
 	/* set up common data for all our workers */
 	memset(&worker, 0, sizeof(worker));
 	worker.bgw_flags = BGWORKER_SHMEM_ACCESS |
@@ -337,7 +362,7 @@ _PG_init(void)
 	/*
 	 * Now fill in worker-specific data, and do the actual registrations.
 	 */
-	for (int i = 1; i <= worker_spi_total_workers; i++)
+	for (i = 1; i <= worker_spi_total_workers; i++)
 	{
 		snprintf(worker.bgw_name, BGW_MAXLEN, "worker_spi worker %d", i);
 		snprintf(worker.bgw_type, BGW_MAXLEN, "worker_spi");

@@ -39,7 +39,7 @@ COMMIT;
 -- combo data is not there anymore, but should still see tuples
 SELECT ctid,cmin,* FROM combocidtest;
 
--- Test combo CIDs with portals
+-- Test combo cids with portals
 BEGIN;
 
 INSERT INTO combocidtest VALUES (333);

@@ -66,16 +66,42 @@ pgrowlocks(PG_FUNCTION_ARGS)
 {
 	text	   *relname = PG_GETARG_TEXT_PP(0);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	bool		randomAccess;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
 	AttInMetadata *attinmeta;
 	Relation	rel;
 	RangeVar   *relrv;
 	TableScanDesc scan;
 	HeapScanDesc hscan;
 	HeapTuple	tuple;
+	MemoryContext oldcontext;
 	AclResult	aclresult;
 	char	  **values;
 
-	SetSingleFuncCall(fcinfo, 0);
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize))
+		ereport(ERROR,
+				(errcode(ERRCODE_SYNTAX_ERROR),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* The tupdesc and tuplestore must be created in ecxt_per_query_memory */
+	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
+
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	randomAccess = (rsinfo->allowedModes & SFRM_Materialize_Random) != 0;
+	tupstore = tuplestore_begin_heap(randomAccess, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
 
 	/* Access the table */
 	relrv = makeRangeVarFromNameList(textToQualifiedNameList(relname));
@@ -104,7 +130,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 	aclresult = pg_class_aclcheck(RelationGetRelid(rel), GetUserId(),
 								  ACL_SELECT);
 	if (aclresult != ACLCHECK_OK)
-		aclresult = has_privs_of_role(GetUserId(), ROLE_PG_STAT_SCAN_TABLES) ? ACLCHECK_OK : ACLCHECK_NO_PRIV;
+		aclresult = is_member_of_role(GetUserId(), DEFAULT_ROLE_STAT_SCAN_TABLES) ? ACLCHECK_OK : ACLCHECK_NO_PRIV;
 
 	if (aclresult != ACLCHECK_OK)
 		aclcheck_error(aclresult, get_relkind_objtype(rel->rd_rel->relkind),
@@ -114,9 +140,9 @@ pgrowlocks(PG_FUNCTION_ARGS)
 	scan = table_beginscan(rel, GetActiveSnapshot(), 0, NULL);
 	hscan = (HeapScanDesc) scan;
 
-	attinmeta = TupleDescGetAttInMetadata(rsinfo->setDesc);
+	attinmeta = TupleDescGetAttInMetadata(tupdesc);
 
-	values = (char **) palloc(rsinfo->setDesc->natts * sizeof(char *));
+	values = (char **) palloc(tupdesc->natts * sizeof(char *));
 
 	while ((tuple = heap_getnext(scan, ForwardScanDirection)) != NULL)
 	{
@@ -142,7 +168,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 															 PointerGetDatum(&tuple->t_self));
 
 			values[Atnum_xmax] = palloc(NCHARS * sizeof(char));
-			snprintf(values[Atnum_xmax], NCHARS, "%u", xmax);
+			snprintf(values[Atnum_xmax], NCHARS, "%d", xmax);
 			if (infomask & HEAP_XMAX_IS_MULTI)
 			{
 				MultiXactMember *members;
@@ -183,7 +209,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 							strcat(values[Atnum_modes], ",");
 							strcat(values[Atnum_pids], ",");
 						}
-						snprintf(buf, NCHARS, "%u", members[j].xid);
+						snprintf(buf, NCHARS, "%d", members[j].xid);
 						strcat(values[Atnum_xids], buf);
 						switch (members[j].status)
 						{
@@ -224,7 +250,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 				values[Atnum_ismulti] = pstrdup("false");
 
 				values[Atnum_xids] = palloc(NCHARS * sizeof(char));
-				snprintf(values[Atnum_xids], NCHARS, "{%u}", xmax);
+				snprintf(values[Atnum_xids], NCHARS, "{%d}", xmax);
 
 				values[Atnum_modes] = palloc(NCHARS);
 				if (infomask & HEAP_XMAX_LOCK_ONLY)
@@ -262,7 +288,7 @@ pgrowlocks(PG_FUNCTION_ARGS)
 
 			/* build a tuple */
 			tuple = BuildTupleFromCStrings(attinmeta, values);
-			tuplestore_puttuple(rsinfo->setResult, tuple);
+			tuplestore_puttuple(tupstore, tuple);
 		}
 		else
 		{

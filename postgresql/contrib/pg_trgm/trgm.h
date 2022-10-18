@@ -37,7 +37,6 @@
 #define WordDistanceStrategyNumber			8
 #define StrictWordSimilarityStrategyNumber	9
 #define StrictWordDistanceStrategyNumber	10
-#define EqualStrategyNumber					11
 
 typedef char trgm[3];
 

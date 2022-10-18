@@ -32,6 +32,10 @@
 
 #define LOBBUFSIZE 16384
 
+/*
+ * Note: zlib.h must be included *after* libpq-fe.h, because the latter may
+ * include ssl.h, which has a naming conflict with zlib.h.
+ */
 #ifdef HAVE_LIBZ
 #include <zlib.h>
 #define GZCLOSE(fh) gzclose(fh)
@@ -121,14 +125,14 @@ struct ParallelState;
 #define READ_ERROR_EXIT(fd) \
 	do { \
 		if (feof(fd)) \
-			pg_fatal("could not read from input file: end of file"); \
+			fatal("could not read from input file: end of file"); \
 		else \
-			pg_fatal("could not read from input file: %m"); \
+			fatal("could not read from input file: %m"); \
 	} while (0)
 
 #define WRITE_ERROR_EXIT \
 	do { \
-		pg_fatal("could not write to output file: %m"); \
+		fatal("could not write to output file: %m"); \
 	} while (0)
 
 typedef enum T_Action
@@ -225,9 +229,12 @@ typedef enum
 #define RESTORE_PASS_LAST RESTORE_PASS_POST_ACL
 } RestorePass;
 
-#define REQ_SCHEMA	0x01		/* want schema */
-#define REQ_DATA	0x02		/* want data */
-#define REQ_SPECIAL	0x04		/* for special TOC entries */
+typedef enum
+{
+	REQ_SCHEMA = 0x01,			/* want schema */
+	REQ_DATA = 0x02,			/* want data */
+	REQ_SPECIAL = 0x04			/* for special TOC entries */
+} teReqs;
 
 struct _archiveHandle
 {
@@ -331,14 +338,10 @@ struct _archiveHandle
 	DumpId	   *tableDataId;	/* TABLE DATA ids, indexed by table dumpId */
 
 	struct _tocEntry *currToc;	/* Used when dumping data */
-	int			compression;	/*---------
-								 * Compression requested on open().
-								 * Possible values for compression:
-								 * -1	Z_DEFAULT_COMPRESSION
-								 *  0	COMPRESSION_NONE
-								 * 1-9 levels for gzip compression
-								 *---------
-								 */
+	int			compression;	/* Compression requested on open Possible
+								 * values for compression: -1
+								 * Z_DEFAULT_COMPRESSION 0	COMPRESSION_NONE
+								 * 1-9 levels for gzip compression */
 	bool		dosync;			/* data requested to be synced on sight */
 	ArchiveMode mode;			/* File mode - r or w */
 	void	   *formatData;		/* Header data specific to file format */
@@ -384,13 +387,12 @@ struct _tocEntry
 	int			nDeps;			/* number of dependencies */
 
 	DataDumperPtr dataDumper;	/* Routine to dump data for object */
-	const void *dataDumperArg;	/* Arg for above routine */
+	void	   *dataDumperArg;	/* Arg for above routine */
 	void	   *formatData;		/* TOC Entry data specific to file format */
 
 	/* working state while dumping/restoring */
 	pgoff_t		dataLength;		/* item's data size; 0 if none or unknown */
-	int			reqs;			/* do we need schema and/or data of object
-								 * (REQ_* bit mask) */
+	teReqs		reqs;			/* do we need schema and/or data of object */
 	bool		created;		/* set for DATA member if TABLE was created */
 
 	/* working state (needed only for parallel restore) */
@@ -424,7 +426,7 @@ typedef struct _archiveOpts
 	const DumpId *deps;
 	int			nDeps;
 	DataDumperPtr dumpFn;
-	const void *dumpArg;
+	void	   *dumpArg;
 } ArchiveOpts;
 #define ARCHIVE_OPTS(...) &(ArchiveOpts){__VA_ARGS__}
 /* Called to add a TOC entry */
@@ -440,7 +442,7 @@ extern void WriteDataChunksForTocEntry(ArchiveHandle *AH, TocEntry *te);
 extern ArchiveHandle *CloneArchive(ArchiveHandle *AH);
 extern void DeCloneArchive(ArchiveHandle *AH);
 
-extern int	TocIDRequired(ArchiveHandle *AH, DumpId id);
+extern teReqs TocIDRequired(ArchiveHandle *AH, DumpId id);
 TocEntry   *getTocEntryByDumpId(ArchiveHandle *AH, DumpId id);
 extern bool checkSeek(FILE *fp);
 

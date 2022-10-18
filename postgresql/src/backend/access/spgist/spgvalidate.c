@@ -3,7 +3,7 @@
  * spgvalidate.c
  *	  Opclass validator for SP-GiST.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -43,7 +43,6 @@ spgvalidate(Oid opclassoid)
 	Form_pg_opclass classform;
 	Oid			opfamilyoid;
 	Oid			opcintype;
-	Oid			opckeytype;
 	char	   *opclassname;
 	HeapTuple	familytup;
 	Form_pg_opfamily familyform;
@@ -58,7 +57,6 @@ spgvalidate(Oid opclassoid)
 	spgConfigOut configOut;
 	Oid			configOutLefttype = InvalidOid;
 	Oid			configOutRighttype = InvalidOid;
-	Oid			configOutLeafType = InvalidOid;
 
 	/* Fetch opclass information */
 	classtup = SearchSysCache1(CLAOID, ObjectIdGetDatum(opclassoid));
@@ -68,7 +66,6 @@ spgvalidate(Oid opclassoid)
 
 	opfamilyoid = classform->opcfamily;
 	opcintype = classform->opcintype;
-	opckeytype = classform->opckeytype;
 	opclassname = NameStr(classform->opcname);
 
 	/* Fetch opfamily information */
@@ -121,31 +118,13 @@ spgvalidate(Oid opclassoid)
 				configOutLefttype = procform->amproclefttype;
 				configOutRighttype = procform->amprocrighttype;
 
-				/* Default leaf type is opckeytype or input type */
-				if (OidIsValid(opckeytype))
-					configOutLeafType = opckeytype;
-				else
-					configOutLeafType = procform->amproclefttype;
-
-				/* If some other leaf datum type is specified, warn */
-				if (OidIsValid(configOut.leafType) &&
-					configOutLeafType != configOut.leafType)
-				{
-					ereport(INFO,
-							(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-							 errmsg("SP-GiST leaf data type %s does not match declared type %s",
-									format_type_be(configOut.leafType),
-									format_type_be(configOutLeafType))));
-					result = false;
-					configOutLeafType = configOut.leafType;
-				}
-
 				/*
 				 * When leaf and attribute types are the same, compress
 				 * function is not required and we set corresponding bit in
 				 * functionset for later group consistency check.
 				 */
-				if (configOutLeafType == configIn.attType)
+				if (!OidIsValid(configOut.leafType) ||
+					configOut.leafType == configIn.attType)
 				{
 					foreach(lc, grouplist)
 					{
@@ -177,7 +156,7 @@ spgvalidate(Oid opclassoid)
 					ok = false;
 				else
 					ok = check_amproc_signature(procform->amproc,
-												configOutLeafType, true,
+												configOut.leafType, true,
 												1, 1, procform->amproclefttype);
 				break;
 			case SPGIST_OPTIONS_PROC:
@@ -323,70 +302,4 @@ spgvalidate(Oid opclassoid)
 	ReleaseSysCache(classtup);
 
 	return result;
-}
-
-/*
- * Prechecking function for adding operators/functions to an SP-GiST opfamily.
- */
-void
-spgadjustmembers(Oid opfamilyoid,
-				 Oid opclassoid,
-				 List *operators,
-				 List *functions)
-{
-	ListCell   *lc;
-
-	/*
-	 * Operator members of an SP-GiST opfamily should never have hard
-	 * dependencies, since their connection to the opfamily depends only on
-	 * what the support functions think, and that can be altered.  For
-	 * consistency, we make all soft dependencies point to the opfamily,
-	 * though a soft dependency on the opclass would work as well in the
-	 * CREATE OPERATOR CLASS case.
-	 */
-	foreach(lc, operators)
-	{
-		OpFamilyMember *op = (OpFamilyMember *) lfirst(lc);
-
-		op->ref_is_hard = false;
-		op->ref_is_family = true;
-		op->refobjid = opfamilyoid;
-	}
-
-	/*
-	 * Required support functions should have hard dependencies.  Preferably
-	 * those are just dependencies on the opclass, but if we're in ALTER
-	 * OPERATOR FAMILY, we leave the dependency pointing at the whole
-	 * opfamily.  (Given that SP-GiST opclasses generally don't share
-	 * opfamilies, it seems unlikely to be worth working harder.)
-	 */
-	foreach(lc, functions)
-	{
-		OpFamilyMember *op = (OpFamilyMember *) lfirst(lc);
-
-		switch (op->number)
-		{
-			case SPGIST_CONFIG_PROC:
-			case SPGIST_CHOOSE_PROC:
-			case SPGIST_PICKSPLIT_PROC:
-			case SPGIST_INNER_CONSISTENT_PROC:
-			case SPGIST_LEAF_CONSISTENT_PROC:
-				/* Required support function */
-				op->ref_is_hard = true;
-				break;
-			case SPGIST_COMPRESS_PROC:
-			case SPGIST_OPTIONS_PROC:
-				/* Optional, so force it to be a soft family dependency */
-				op->ref_is_hard = false;
-				op->ref_is_family = true;
-				op->refobjid = opfamilyoid;
-				break;
-			default:
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_OBJECT_DEFINITION),
-						 errmsg("support function number %d is invalid for access method %s",
-								op->number, "spgist")));
-				break;
-		}
-	}
 }

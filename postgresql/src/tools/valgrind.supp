@@ -15,6 +15,24 @@
 # those bytes as padding, this is harmless.
 
 {
+	padding_pgstat_send
+	Memcheck:Param
+	socketcall.send(msg)
+
+	fun:*send*
+	fun:pgstat_send
+}
+
+{
+	padding_pgstat_sendto
+	Memcheck:Param
+	socketcall.sendto(msg)
+
+	fun:*send*
+	fun:pgstat_send
+}
+
+{
 	padding_pgstat_write
 	Memcheck:Param
 	write(buf)

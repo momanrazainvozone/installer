@@ -1,10 +1,10 @@
 /*-------------------------------------------------------------------------
  *
  * pmsignal.c
- *	  routines for signaling between the postmaster and its child processes
+ *	  routines for signaling the postmaster from its child processes
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -55,10 +55,6 @@
  * but carries the extra information that the child is a WAL sender.
  * WAL senders too start in ACTIVE state, but switch to WALSENDER once they
  * start streaming the WAL (and they never go back to ACTIVE after that).
- *
- * We also have a shared-memory field that is used for communication in
- * the opposite direction, from postmaster to children: it tells why the
- * postmaster has broadcasted SIGQUIT signals, if indeed it has done so.
  */
 
 #define PM_CHILD_UNUSED		0	/* these values must fit in sig_atomic_t */
@@ -69,10 +65,8 @@
 /* "typedef struct PMSignalData PMSignalData" appears in pmsignal.h */
 struct PMSignalData
 {
-	/* per-reason flags for signaling the postmaster */
+	/* per-reason flags */
 	sig_atomic_t PMSignalFlags[NUM_PMSIGNALS];
-	/* global flags for signals from postmaster to children */
-	QuitSignalReason sigquit_reason;	/* why SIGQUIT was sent */
 	/* per-child-process flags */
 	int			num_child_flags;	/* # of entries in PMChildFlags[] */
 	int			next_child_flag;	/* next slot to try to assign */
@@ -140,7 +134,6 @@ PMSignalShmemInit(void)
 
 	if (!found)
 	{
-		/* initialize all flags to zeroes */
 		MemSet(unvolatize(PMSignalData *, PMSignalState), 0, PMSignalShmemSize());
 		PMSignalState->num_child_flags = MaxLivePostmasterChildren();
 	}
@@ -176,34 +169,6 @@ CheckPostmasterSignal(PMSignalReason reason)
 		return true;
 	}
 	return false;
-}
-
-/*
- * SetQuitSignalReason - broadcast the reason for a system shutdown.
- * Should be called by postmaster before sending SIGQUIT to children.
- *
- * Note: in a crash-and-restart scenario, the "reason" field gets cleared
- * as a part of rebuilding shared memory; the postmaster need not do it
- * explicitly.
- */
-void
-SetQuitSignalReason(QuitSignalReason reason)
-{
-	PMSignalState->sigquit_reason = reason;
-}
-
-/*
- * GetQuitSignalReason - obtain the reason for a system shutdown.
- * Called by child processes when they receive SIGQUIT.
- * If the postmaster hasn't actually sent SIGQUIT, will return PMQUIT_NOT_SENT.
- */
-QuitSignalReason
-GetQuitSignalReason(void)
-{
-	/* This is called in signal handlers, so be extra paranoid. */
-	if (!IsUnderPostmaster || PMSignalState == NULL)
-		return PMQUIT_NOT_SENT;
-	return PMSignalState->sigquit_reason;
 }
 
 

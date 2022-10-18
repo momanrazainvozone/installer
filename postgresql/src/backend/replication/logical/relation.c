@@ -1,22 +1,22 @@
 /*-------------------------------------------------------------------------
  * relation.c
- *	   PostgreSQL logical replication relation mapping cache
+ *	   PostgreSQL logical replication
  *
- * Copyright (c) 2016-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/replication/logical/relation.c
  *
  * NOTES
- *	  Routines in this file mainly have to do with mapping the properties
- *	  of local replication target relations to the properties of their
- *	  remote counterpart.
+ *	  This file contains helper functions for logical replication relation
+ *	  mapping cache.
  *
  *-------------------------------------------------------------------------
  */
 
 #include "postgres.h"
 
+#include "access/relation.h"
 #include "access/table.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_subscription_rel.h"
@@ -106,6 +106,7 @@ logicalrep_relmap_init(void)
 								  ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize the relation hash table. */
+	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(LogicalRepRelId);
 	ctl.entrysize = sizeof(LogicalRepRelMapEntry);
 	ctl.hcxt = LogicalRepRelMapContext;
@@ -213,43 +214,6 @@ logicalrep_rel_att_by_name(LogicalRepRelation *remoterel, const char *attname)
 }
 
 /*
- * Report error with names of the missing local relation column(s), if any.
- */
-static void
-logicalrep_report_missing_attrs(LogicalRepRelation *remoterel,
-								Bitmapset *missingatts)
-{
-	if (!bms_is_empty(missingatts))
-	{
-		StringInfoData missingattsbuf;
-		int			missingattcnt = 0;
-		int			i;
-
-		initStringInfo(&missingattsbuf);
-
-		while ((i = bms_first_member(missingatts)) >= 0)
-		{
-			missingattcnt++;
-			if (missingattcnt == 1)
-				appendStringInfo(&missingattsbuf, _("\"%s\""),
-								 remoterel->attnames[i]);
-			else
-				appendStringInfo(&missingattsbuf, _(", \"%s\""),
-								 remoterel->attnames[i]);
-		}
-
-		ereport(ERROR,
-				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
-				 errmsg_plural("logical replication target relation \"%s.%s\" is missing replicated column: %s",
-							   "logical replication target relation \"%s.%s\" is missing replicated columns: %s",
-							   missingattcnt,
-							   remoterel->nspname,
-							   remoterel->relname,
-							   missingattsbuf.data)));
-	}
-}
-
-/*
  * Check if replica identity matches and mark the updatable flag.
  *
  * We allow for stricter replica identity (fewer columns) on subscriber as
@@ -347,7 +311,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 	 */
 	if (entry->localrelvalid)
 	{
-		entry->localrel = try_table_open(entry->localreloid, lockmode);
+		entry->localrel = try_relation_open(entry->localreloid, lockmode);
 		if (!entry->localrel)
 		{
 			/* Table was renamed or dropped. */
@@ -368,10 +332,10 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 	if (!entry->localrelvalid)
 	{
 		Oid			relid;
+		int			found;
 		TupleDesc	desc;
 		MemoryContext oldctx;
 		int			i;
-		Bitmapset  *missingatts;
 
 		/* Release the no-longer-useful attrmap, if any. */
 		if (entry->attrmap)
@@ -406,8 +370,7 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 		entry->attrmap = make_attrmap(desc->natts);
 		MemoryContextSwitchTo(oldctx);
 
-		/* check and report missing attrs, if any */
-		missingatts = bms_add_range(NULL, 0, remoterel->natts - 1);
+		found = 0;
 		for (i = 0; i < desc->natts; i++)
 		{
 			int			attnum;
@@ -424,13 +387,16 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 
 			entry->attrmap->attnums[i] = attnum;
 			if (attnum >= 0)
-				missingatts = bms_del_member(missingatts, attnum);
+				found++;
 		}
 
-		logicalrep_report_missing_attrs(remoterel, missingatts);
-
-		/* be tidy */
-		bms_free(missingatts);
+		/* TODO, detail message with names of missing columns */
+		if (found < remoterel->natts)
+			ereport(ERROR,
+					(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
+					 errmsg("logical replication target relation \"%s.%s\" is missing "
+							"some replicated columns",
+							remoterel->nspname, remoterel->relname)));
 
 		/*
 		 * Set if the table's replica identity is enough to apply
@@ -444,7 +410,8 @@ logicalrep_rel_open(LogicalRepRelId remoteid, LOCKMODE lockmode)
 	if (entry->state != SUBREL_STATE_READY)
 		entry->state = GetSubscriptionRelState(MySubscription->oid,
 											   entry->localreloid,
-											   &entry->statelsn);
+											   &entry->statelsn,
+											   true);
 
 	return entry;
 }
@@ -558,6 +525,7 @@ logicalrep_partmap_init(void)
 								  ALLOCSET_DEFAULT_SIZES);
 
 	/* Initialize the relation hash table. */
+	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);	/* partition OID */
 	ctl.entrysize = sizeof(LogicalRepPartMapEntry);
 	ctl.hcxt = LogicalRepPartMapContext;
@@ -579,7 +547,7 @@ logicalrep_partmap_init(void)
  * gets freed/rebuilt.
  *
  * Note there's no logicalrep_partition_close, because the caller closes the
- * component relation.
+ * the component relation.
  */
 LogicalRepRelMapEntry *
 logicalrep_partition_open(LogicalRepRelMapEntry *root,

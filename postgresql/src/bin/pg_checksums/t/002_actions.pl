@@ -1,15 +1,11 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Do basic sanity checks supported by pg_checksums using
 # an initialized cluster.
 
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 63;
 
 
 # Utility routine to create and check a table with corrupted checksums
@@ -26,7 +22,7 @@ sub check_relation_corruption
 	# Create table and discover its filesystem location.
 	$node->safe_psql(
 		'postgres',
-		"CREATE TABLE $table AS SELECT a FROM generate_series(1,10000) AS a;
+		"SELECT a INTO $table FROM generate_series(1,10000) AS a;
 		ALTER TABLE $table SET (autovacuum_enabled=false);");
 
 	$node->safe_psql('postgres',
@@ -86,7 +82,7 @@ sub check_relation_corruption
 }
 
 # Initialize node with checksums disabled.
-my $node = PostgreSQL::Test::Cluster->new('node_checksum');
+my $node = get_new_node('node_checksum');
 $node->init();
 my $pgdata = $node->data_dir;
 
@@ -172,22 +168,6 @@ command_fails(
 	[ 'pg_checksums', '--enable', '--filenode', '1234', '-D', $pgdata ],
 	"fails when relfilenodes are requested and action is --enable");
 
-# Test postgres -C for an offline cluster.
-# Run-time GUCs are safe to query here.  Note that a lock file is created,
-# then removed, leading to an extra LOG entry showing in stderr.  This uses
-# log_min_messages=fatal to remove any noise.  This test uses a startup
-# wrapped with pg_ctl to allow the case where this runs under a privileged
-# account on Windows.
-command_checks_all(
-	[
-		'pg_ctl', 'start', '-D', $pgdata, '-s', '-o',
-		'-C data_checksums -c log_min_messages=fatal'
-	],
-	1,
-	[qr/^on$/],
-	[qr/could not start server/],
-	'data_checksums=on is reported on an offline cluster');
-
 # Checks cannot happen with an online cluster
 $node->start;
 command_fails([ 'pg_checksums', '--check', '-D', $pgdata ],
@@ -249,5 +229,3 @@ fail_corrupt($node, "99990_vm");
 fail_corrupt($node, "99990_init.123");
 fail_corrupt($node, "99990_fsm.123");
 fail_corrupt($node, "99990_vm.123");
-
-done_testing();

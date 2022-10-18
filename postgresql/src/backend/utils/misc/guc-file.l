@@ -2,7 +2,7 @@
 /*
  * Scanner for the configuration file
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/backend/utils/misc/guc-file.l
  */
@@ -49,12 +49,13 @@ static sigjmp_buf *GUC_flex_fatal_jmp;
 static void FreeConfigVariable(ConfigVariable *item);
 
 static void record_config_file_error(const char *errmsg,
-									 const char *config_file,
-									 int lineno,
-									 ConfigVariable **head_p,
-									 ConfigVariable **tail_p);
+						 const char *config_file,
+						 int lineno,
+						 ConfigVariable **head_p,
+						 ConfigVariable **tail_p);
 
 static int	GUC_flex_fatal(const char *msg);
+static char *GUC_scanstr(const char *s);
 
 /* LCOV_EXCL_START */
 
@@ -282,7 +283,7 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 		 * Try to find the variable; but do not create a custom placeholder if
 		 * it's not there already.
 		 */
-		record = find_option(item->name, false, true, elevel);
+		record = find_option(item->name, false, elevel);
 
 		if (record)
 		{
@@ -306,12 +307,12 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 			/* Now mark it as present in file */
 			record->status |= GUC_IS_IN_FILE;
 		}
-		else if (!valid_custom_variable_name(item->name))
+		else if (strchr(item->name, GUC_QUALIFIER_SEPARATOR) == NULL)
 		{
 			/* Invalid non-custom variable, so complain */
 			ereport(elevel,
 					(errcode(ERRCODE_UNDEFINED_OBJECT),
-					 errmsg("unrecognized configuration parameter \"%s\" in file \"%s\" line %d",
+					 errmsg("unrecognized configuration parameter \"%s\" in file \"%s\" line %u",
 							item->name,
 							item->filename, item->sourceline)));
 			item->errmsg = pstrdup("unrecognized configuration parameter");
@@ -401,8 +402,9 @@ ProcessConfigFileInternal(GucContext context, bool applySettings, int elevel)
 	 * be run only after initialization is complete.
 	 *
 	 * XXX this is an unmaintainable crock, because we have to know how to set
-	 * (or at least what to call to set) every non-PGC_INTERNAL variable that
-	 * could potentially have PGC_S_DYNAMIC_DEFAULT or PGC_S_ENV_VAR source.
+	 * (or at least what to call to set) every variable that could potentially
+	 * have PGC_S_DYNAMIC_DEFAULT or PGC_S_ENV_VAR source. However, there's no
+	 * time to redesign it for 9.1.
 	 */
 	if (context == PGC_SIGHUP && applySettings)
 	{
@@ -797,7 +799,7 @@ ParseConfigFp(FILE *fp, const char *config_file, int depth, int elevel,
 			token != GUC_UNQUOTED_STRING)
 			goto parse_error;
 		if (token == GUC_STRING)	/* strip quotes and escapes */
-			opt_value = DeescapeQuotedString(yytext);
+			opt_value = GUC_scanstr(yytext);
 		else
 			opt_value = pstrdup(yytext);
 
@@ -1132,25 +1134,22 @@ FreeConfigVariable(ConfigVariable *item)
 
 
 /*
- *		DeescapeQuotedString
+ *		scanstr
  *
  * Strip the quotes surrounding the given string, and collapse any embedded
  * '' sequences and backslash escapes.
  *
- * The string returned is palloc'd and should eventually be pfree'd by the
+ * the string returned is palloc'd and should eventually be pfree'd by the
  * caller.
- *
- * This is exported because it is also used by the bootstrap scanner.
  */
-char *
-DeescapeQuotedString(const char *s)
+static char *
+GUC_scanstr(const char *s)
 {
 	char	   *newStr;
 	int			len,
 				i,
 				j;
 
-	/* We just Assert that there are leading and trailing quotes */
 	Assert(s != NULL && s[0] == '\'');
 	len = strlen(s);
 	Assert(len >= 2);

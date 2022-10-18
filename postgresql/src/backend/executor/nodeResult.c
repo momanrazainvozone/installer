@@ -34,7 +34,7 @@
  *		plan normally and pass back the results.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -103,7 +103,7 @@ ExecResult(PlanState *pstate)
 	 * called, OR that we failed the constant qual check. Either way, now we
 	 * are through.
 	 */
-	if (!node->rs_done)
+	while (!node->rs_done)
 	{
 		outerPlan = outerPlanState(node);
 
@@ -195,7 +195,7 @@ ExecInitResult(Result *node, EState *estate, int eflags)
 	resstate->ps.ExecProcNode = ExecResult;
 
 	resstate->rs_done = false;
-	resstate->rs_checkqual = (node->resconstantqual != NULL);
+	resstate->rs_checkqual = (node->resconstantqual == NULL) ? false : true;
 
 	/*
 	 * Miscellaneous initialization
@@ -260,7 +260,7 @@ void
 ExecReScanResult(ResultState *node)
 {
 	node->rs_done = false;
-	node->rs_checkqual = (node->resconstantqual != NULL);
+	node->rs_checkqual = (node->resconstantqual == NULL) ? false : true;
 
 	/*
 	 * If chgParam of subnode is not null then plan will be re-scanned by

@@ -74,10 +74,10 @@
    which is meant as a default database for use by utilities, users and third
    party applications.  The database server itself does not require the
    <literal>postgres</literal> database to exist, but many external utility
-   programs assume it exists.  There are two more databases created within
-   each cluster during initialization, named <literal>template1</literal>
-   and <literal>template0</literal>.  As the names suggest, these will be
-   used as templates for subsequently-created databases; they should not be
+   programs assume it exists.  Another database created within each cluster
+   during initialization is called
+   <literal>template1</literal>.  As the name suggests, this will be used
+   as a template for subsequently created databases; it should not be
    used for actual work.  (See <xref linkend="managing-databases"/> for
    information about creating new databases within a cluster.)
   </para>
@@ -199,8 +199,8 @@ postgres$ <userinput>initdb -D /usr/local/pgsql/data</userinput>
      <primary>password</primary>
      <secondary>of the superuser</secondary>
    </indexterm>
-   Also, specify <option>-A scram-sha-256</option>
-   so that the default <literal>trust</literal> authentication
+   Also, specify <option>-A md5</option> or
+   <option>-A password</option> so that the default <literal>trust</literal> authentication
    mode is not used; or modify the generated <filename>pg_hba.conf</filename>
    file after running <command>initdb</command>, but
    <emphasis>before</emphasis> you start the server for the first time. (Other
@@ -629,8 +629,9 @@ DETAIL:  Failed system call was semget(5440126, 17, 03600).
 
     <para>
 <screen>
-psql: error: connection to server at "server.joe.com" (123.123.123.123), port 5432 failed: Connection refused
-        Is the server running on that host and accepting TCP/IP connections?
+psql: could not connect to server: Connection refused
+        Is the server running on host "server.joe.com" and accepting
+        TCP/IP connections on port 5432?
 </screen>
      This is the generic <quote>I couldn't find a server to talk
      to</quote> failure. It looks like the above when TCP/IP
@@ -639,22 +640,19 @@ psql: error: connection to server at "server.joe.com" (123.123.123.123), port 54
     </para>
 
     <para>
-     Alternatively, you might get this when attempting Unix-domain socket
+     Alternatively, you'll get this when attempting Unix-domain socket
      communication to a local server:
 <screen>
-psql: error: connection to server on socket "/tmp/.s.PGSQL.5432" failed: No such file or directory
-        Is the server running locally and accepting connections on that socket?
+psql: could not connect to server: No such file or directory
+        Is the server running locally and accepting
+        connections on Unix domain socket "/tmp/.s.PGSQL.5432"?
 </screen>
-     If the server is indeed running, check that the client's idea of the
-     socket path (here <literal>/tmp</literal>) agrees with the server's
-     <xref linkend="guc-unix-socket-directories"/> setting.
     </para>
 
     <para>
-     A connection failure message always shows the server address or socket
-     path name, which is useful in verifying that the client is trying to
+     The last line is useful in verifying that the client is trying to
      connect to the right place. If there is in fact no server
-     listening there, the kernel error message will typically be either
+     running there, the kernel error message will typically be either
      <computeroutput>Connection refused</computeroutput> or
      <computeroutput>No such file or directory</computeroutput>, as
      illustrated. (It is important to realize that
@@ -665,7 +663,7 @@ psql: error: connection to server on socket "/tmp/.s.PGSQL.5432" failed: No such
      linkend="client-authentication-problems"/>.) Other error messages
      such as <computeroutput>Connection timed out</computeroutput> might
      indicate more fundamental problems, like lack of network
-     connectivity, or a firewall blocking the connection.
+     connectivity.
     </para>
    </sect2>
   </sect1>
@@ -1277,12 +1275,11 @@ default:\
     <itemizedlist>
      <listitem>
       <para>
-      On <productname>Linux</productname> the kernel parameter
-      <varname>fs.file-max</varname> determines the maximum number of open
-      files that the kernel will support.  It can be changed with
-      <literal>sysctl -w fs.file-max=<replaceable>N</replaceable></literal>.
-      To make the setting persist across reboots, add an assignment
-      in <filename>/etc/sysctl.conf</filename>.
+      On <productname>Linux</productname>
+      <filename>/proc/sys/fs/file-max</filename> determines the
+      maximum number of open files that the kernel will support.  It can
+      be changed by writing a different number into the file or by
+      adding an assignment in <filename>/etc/sysctl.conf</filename>.
       The maximum limit of files per process is fixed at the time the
       kernel is compiled; see
       <filename>/usr/src/linux/Documentation/proc.txt</filename> for
@@ -1318,22 +1315,6 @@ default:\
     linkend="guc-max-files-per-process"/> configuration parameter to
     limit the consumption of open files.
    </para>
-
-   <para>
-    Another kernel limit that may be of concern when supporting large
-    numbers of client connections is the maximum socket connection queue
-    length.  If more than that many connection requests arrive within a very
-    short period, some may get rejected before the postmaster can service
-    the requests, with those clients receiving unhelpful connection failure
-    errors such as <quote>Resource temporarily unavailable</quote> or
-    <quote>Connection refused</quote>.  The default queue length limit is 128
-    on many platforms.  To raise it, adjust the appropriate kernel parameter
-    via <application>sysctl</application>, then restart the postmaster.
-    The parameter is variously named <varname>net.core.somaxconn</varname>
-    on Linux, <varname>kern.ipc.soacceptqueue</varname> on newer FreeBSD,
-    and <varname>kern.ipc.somaxconn</varname> on macOS and other BSD
-    variants.
-   </para>
   </sect2>
 
   <sect2 id="linux-memory-overcommit">
@@ -1356,7 +1337,7 @@ default:\
     optimal for <productname>PostgreSQL</productname>. Because of the
     way that the kernel implements memory overcommit, the kernel might
     terminate the <productname>PostgreSQL</productname> postmaster (the
-    supervisor server process) if the memory demands of either
+    master server process) if the memory demands of either
     <productname>PostgreSQL</productname> or another process cause the
     system to run out of virtual memory.
    </para>
@@ -1457,52 +1438,41 @@ export PG_OOM_ADJUST_VALUE=0
     using large values of <xref linkend="guc-shared-buffers"/>.  To use this
     feature in <productname>PostgreSQL</productname> you need a kernel
     with <varname>CONFIG_HUGETLBFS=y</varname> and
-    <varname>CONFIG_HUGETLB_PAGE=y</varname>. You will also have to configure
-    the operating system to provide enough huge pages of the desired size.
-    To determine the number of huge pages needed, use the
-    <command>postgres</command> command to see the value of
-    <xref linkend="guc-shared-memory-size-in-huge-pages"/>.  Note that the
-    server must be shut down to view this runtime-computed parameter.
-    This might look like:
+    <varname>CONFIG_HUGETLB_PAGE=y</varname>. You will also have to adjust
+    the kernel setting <varname>vm.nr_hugepages</varname>. To estimate the
+    number of huge pages needed, start <productname>PostgreSQL</productname>
+    without huge pages enabled and check the
+    postmaster's anonymous shared memory segment size, as well as the system's
+    huge page size, using the <filename>/proc</filename> file system.  This might
+    look like:
 <programlisting>
-$ <userinput>postgres -D $PGDATA -C shared_memory_size_in_huge_pages</userinput>
-3170
+$ <userinput>head -1 $PGDATA/postmaster.pid</userinput>
+4170
+$ <userinput>pmap 4170 | awk '/rw-s/ &amp;&amp; /zero/ {print $2}'</userinput>
+6490428K
 $ <userinput>grep ^Hugepagesize /proc/meminfo</userinput>
 Hugepagesize:       2048 kB
-$ <userinput>ls /sys/kernel/mm/hugepages</userinput>
-hugepages-1048576kB  hugepages-2048kB
 </programlisting>
-
-     In this example the default is 2MB, but you can also explicitly request
-     either 2MB or 1GB with <xref linkend="guc-huge-page-size"/> to adapt
-     the number of pages calculated by
-     <varname>shared_memory_size_in_huge_pages</varname>.
-
-     While we need at least <literal>3170</literal> huge pages in this example,
-     a larger setting would be appropriate if other programs on the machine
-     also need huge pages.
-     We can set this with:
+     <literal>6490428</literal> / <literal>2048</literal> gives approximately
+     <literal>3169.154</literal>, so in this example we need at
+     least <literal>3170</literal> huge pages, which we can set with:
 <programlisting>
-# <userinput>sysctl -w vm.nr_hugepages=3170</userinput>
+$ <userinput>sysctl -w vm.nr_hugepages=3170</userinput>
 </programlisting>
-     Don't forget to add this setting to <filename>/etc/sysctl.conf</filename>
-     so that it is reapplied after reboots.  For non-default huge page sizes,
-     we can instead use:
-<programlisting>
-# <userinput>echo 3170 > /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinput>
-</programlisting>
-    It is also possible to provide these settings at boot time using
-    kernel parameters such as <literal>hugepagesz=2M hugepages=3170</literal>.
+    A larger setting would be appropriate if other programs on the machine
+    also need huge pages.  Don't forget to add this setting
+    to <filename>/etc/sysctl.conf</filename> so that it will be reapplied
+    after reboots.
    </para>
 
    <para>
     Sometimes the kernel is not able to allocate the desired number of huge
-    pages immediately due to fragmentation, so it might be necessary
-    to repeat the command or to reboot.  (Immediately after a reboot, most of
-    the machine's memory should be available to convert into huge pages.)
-    To verify the huge page allocation situation for a given size, use:
+    pages immediately, so it might be necessary to repeat the command or to
+    reboot.  (Immediately after a reboot, most of the machine's memory
+    should be available to convert into huge pages.)  To verify the huge
+    page allocation situation, use:
 <programlisting>
-$ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinput>
+$ <userinput>grep Huge /proc/meminfo</userinput>
 </programlisting>
    </para>
 
@@ -1515,9 +1485,8 @@ $ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinp
 
    <para>
     The default behavior for huge pages in
-    <productname>PostgreSQL</productname> is to use them when possible, with
-    the system's default huge page size, and
-    to fall back to normal pages on failure. To enforce the use of huge
+    <productname>PostgreSQL</productname> is to use them when possible and
+    to fall back to normal pages when failing. To enforce the use of huge
     pages, you can set <xref linkend="guc-huge-pages"/>
     to <literal>on</literal> in <filename>postgresql.conf</filename>.
     Note that with this setting <productname>PostgreSQL</productname> will fail to
@@ -1569,7 +1538,11 @@ $ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinp
        After receiving <systemitem>SIGTERM</systemitem>, the server
        disallows new connections, but lets existing sessions end their
        work normally. It shuts down only after all of the sessions terminate.
-       If the server is in recovery when a smart
+       If the server is in online backup mode, it additionally waits
+       until online backup mode is no longer active.  While backup mode is
+       active, new connections will still be allowed, but only to superusers
+       (this exception allows a superuser to connect to terminate
+       online backup mode).  If the server is in recovery when a smart
        shutdown is requested, recovery and streaming replication will be
        stopped only after all regular sessions have terminated.
       </para>
@@ -1585,6 +1558,8 @@ $ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinp
        server processes <systemitem>SIGTERM</systemitem>, which will cause them
        to abort their current transactions and exit promptly. It then
        waits for all server processes to exit and finally shuts down.
+       If the server is in online backup mode, backup mode will be
+       terminated, rendering the backup useless.
       </para>
      </listitem>
     </varlistentry>
@@ -1597,7 +1572,7 @@ $ <userinput>cat /sys/kernel/mm/hugepages/hugepages-2048kB/nr_hugepages</userinp
       The server will send <systemitem>SIGQUIT</systemitem> to all child
       processes and wait for them to terminate.  If any do not terminate
       within 5 seconds, they will be sent <systemitem>SIGKILL</systemitem>.
-      The supervisor server process exits as soon as all child processes have
+      The master server process exits as soon as all child processes have
       exited, without doing normal database shutdown processing.
       This will lead to recovery (by
       replaying the WAL log) upon next start-up. This is recommended
@@ -1787,7 +1762,7 @@ $ <userinput>kill -INT `head -1 /usr/local/pgsql/data/postmaster.pid`</userinput
     version of
     <productname>PostgreSQL</productname>, to take advantage of enhancements
     that might have been made in these programs.  Current releases of the
-    dump programs can read data from any server version back to 9.2.
+    dump programs can read data from any server version back to 8.0.
    </para>
 
    <para>
@@ -1954,9 +1929,9 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
     This is possible because logical replication supports
     replication between different major versions of
     <productname>PostgreSQL</productname>.  The standby can be on the same computer or
-    a different computer.  Once it has synced up with the primary server
+    a different computer.  Once it has synced up with the master server
     (running the older version of <productname>PostgreSQL</productname>), you can
-    switch primaries and make the standby the primary and shut down the older
+    switch masters and make the standby the master and shut down the older
     database instance.  Such a switch-over results in only several seconds
     of downtime for an upgrade.
    </para>
@@ -2193,7 +2168,6 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
 
   <indexterm zone="ssl-tcp">
    <primary>SSL</primary>
-   <secondary>TLS</secondary>
   </indexterm>
 
   <para>
@@ -2205,25 +2179,13 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    enabled at build time (see <xref linkend="installation"/>).
   </para>
 
-  <para>
-   The terms <acronym>SSL</acronym> and <acronym>TLS</acronym> are often used
-   interchangeably to mean a secure encrypted connection using a
-   <acronym>TLS</acronym> protocol. <acronym>SSL</acronym> protocols are the
-   precursors to <acronym>TLS</acronym> protocols, and the term
-   <acronym>SSL</acronym> is still used for encrypted connections even though
-   <acronym>SSL</acronym> protocols are no longer supported.
-   <acronym>SSL</acronym> is used interchangeably with <acronym>TLS</acronym>
-   in <productname>PostgreSQL</productname>.
-
-  </para>
   <sect2 id="ssl-setup">
    <title>Basic Setup</title>
 
   <para>
    With <acronym>SSL</acronym> support compiled in, the
    <productname>PostgreSQL</productname> server can be started with
-   support for encrypted connections using <acronym>TLS</acronym> protocols
-   enabled by setting the parameter
+   <acronym>SSL</acronym> enabled by setting the parameter
    <xref linkend="guc-ssl"/> to <literal>on</literal> in
    <filename>postgresql.conf</filename>.  The server will listen for both normal
    and <acronym>SSL</acronym> connections on the same TCP port, and will negotiate
@@ -2279,7 +2241,7 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    The certificates of <quote>intermediate</quote> certificate authorities
    can also be appended to the file.  Doing this avoids the necessity of
    storing intermediate certificates on clients, assuming the root and
-   intermediate certificates were created with <literal>v3_ca</literal>
+   intermediate certificates were created with <literal>v3_ca </literal>
    extensions.  (This sets the certificate's basic constraint of
    <literal>CA</literal> to <literal>true</literal>.)
    This allows easier expiration of intermediate certificates.
@@ -2361,16 +2323,16 @@ pg_dumpall -p 5432 | psql -d postgres -p 5433
    you wish to avoid storing them on clients (assuming the root and
    intermediate certificates were created with <literal>v3_ca</literal>
    extensions).  Certificate Revocation List (CRL) entries are also
-   checked if the parameter <xref linkend="guc-ssl-crl-file"/> or
-   <xref linkend="guc-ssl-crl-dir"/> is set.
+   checked if the parameter <xref linkend="guc-ssl-crl-file"/> is set.
   </para>
 
   <para>
    The <literal>clientcert</literal> authentication option is available for
    all authentication methods, but only in <filename>pg_hba.conf</filename> lines
    specified as <literal>hostssl</literal>.  When <literal>clientcert</literal> is
-   not specified, the server verifies the client certificate against its CA
-   file only if a client certificate is presented and the CA is configured.
+   not specified or is set to <literal>no-verify</literal>, the server will still
+   verify any presented client certificates against its CA file, if one is
+   configured &mdash; but it will not insist that a client certificate be presented.
   </para>
 
   <para>

@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/copy.c
  */
@@ -581,21 +581,13 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 	else
 	{
 		bool		copydone = false;
-		int			buflen;
-		bool		at_line_begin = true;
 
-		/*
-		 * In text mode, we have to read the input one line at a time, so that
-		 * we can stop reading at the EOF marker (\.).  We mustn't read beyond
-		 * the EOF marker, because if the data was inlined in a SQL script, we
-		 * would eat up the commands after the EOF marker.
-		 */
-		buflen = 0;
 		while (!copydone)
-		{
-			char	   *fgresult;
+		{						/* for each input line ... */
+			bool		firstload;
+			bool		linedone;
 
-			if (at_line_begin && showprompt)
+			if (showprompt)
 			{
 				const char *prompt = get_prompt(PROMPT_COPY, NULL);
 
@@ -603,68 +595,63 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 				fflush(stdout);
 			}
 
-			/* enable longjmp while waiting for input */
-			sigint_interrupt_enabled = true;
+			firstload = true;
+			linedone = false;
 
-			fgresult = fgets(&buf[buflen], COPYBUFSIZ - buflen, copystream);
-
-			sigint_interrupt_enabled = false;
-
-			if (!fgresult)
-				copydone = true;
-			else
-			{
+			while (!linedone)
+			{					/* for each bufferload in line ... */
 				int			linelen;
+				char	   *fgresult;
 
-				linelen = strlen(fgresult);
-				buflen += linelen;
+				/* enable longjmp while waiting for input */
+				sigint_interrupt_enabled = true;
 
-				/* current line is done? */
-				if (buf[buflen - 1] == '\n')
+				fgresult = fgets(buf, sizeof(buf), copystream);
+
+				sigint_interrupt_enabled = false;
+
+				if (!fgresult)
 				{
-					/* check for EOF marker, but not on a partial line */
-					if (at_line_begin)
-					{
-						/*
-						 * This code erroneously assumes '\.' on a line alone
-						 * inside a quoted CSV string terminates the \copy.
-						 * https://www.postgresql.org/message-id/E1TdNVQ-0001ju-GO@wrigleys.postgresql.org
-						 */
-						if ((linelen == 3 && memcmp(fgresult, "\\.\n", 3) == 0) ||
-							(linelen == 4 && memcmp(fgresult, "\\.\r\n", 4) == 0))
-						{
-							copydone = true;
-						}
-					}
-
-					if (copystream == pset.cur_cmd_source)
-					{
-						pset.lineno++;
-						pset.stmt_lineno++;
-					}
-					at_line_begin = true;
-				}
-				else
-					at_line_begin = false;
-			}
-
-			/*
-			 * If the buffer is full, or we've reached the EOF, flush it.
-			 *
-			 * Make sure there's always space for four more bytes in the
-			 * buffer, plus a NUL terminator.  That way, an EOF marker is
-			 * never split across two fgets() calls, which simplifies the
-			 * logic.
-			 */
-			if (buflen >= COPYBUFSIZ - 5 || (copydone && buflen > 0))
-			{
-				if (PQputCopyData(conn, buf, buflen) <= 0)
-				{
-					OK = false;
+					copydone = true;
 					break;
 				}
 
-				buflen = 0;
+				linelen = strlen(buf);
+
+				/* current line is done? */
+				if (linelen > 0 && buf[linelen - 1] == '\n')
+					linedone = true;
+
+				/* check for EOF marker, but not on a partial line */
+				if (firstload)
+				{
+					/*
+					 * This code erroneously assumes '\.' on a line alone
+					 * inside a quoted CSV string terminates the \copy.
+					 * https://www.postgresql.org/message-id/E1TdNVQ-0001ju-GO@wrigleys.postgresql.org
+					 */
+					if (strcmp(buf, "\\.\n") == 0 ||
+						strcmp(buf, "\\.\r\n") == 0)
+					{
+						copydone = true;
+						break;
+					}
+
+					firstload = false;
+				}
+
+				if (PQputCopyData(conn, buf, linelen) <= 0)
+				{
+					OK = false;
+					copydone = true;
+					break;
+				}
+			}
+
+			if (copystream == pset.cur_cmd_source)
+			{
+				pset.lineno++;
+				pset.stmt_lineno++;
 			}
 		}
 	}
@@ -675,9 +662,7 @@ handleCopyIn(PGconn *conn, FILE *copystream, bool isbinary, PGresult **res)
 
 	/*
 	 * Terminate data transfer.  We can't send an error message if we're using
-	 * protocol version 2.  (libpq no longer supports protocol version 2, but
-	 * keep the version checks just in case you're using a pre-v14 libpq.so at
-	 * runtime)
+	 * protocol version 2.
 	 */
 	if (PQputCopyEnd(conn,
 					 (OK || PQprotocolVersion(conn) < 3) ? NULL :

@@ -1,19 +1,20 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test password normalization in SCRAM.
 #
 # This test can only run with Unix-domain sockets.
 
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
+use PostgresNode;
+use TestLib;
 use Test::More;
 if (!$use_unix_sockets)
 {
 	plan skip_all =>
 	  "authentication tests cannot run without Unix-domain sockets";
+}
+else
+{
+	plan tests => 12;
 }
 
 # Delete pg_hba.conf from the given node, add a new entry to it
@@ -32,8 +33,6 @@ sub reset_pg_hba
 # Test access for a single role, useful to wrap all tests into one.
 sub test_login
 {
-	local $Test::Builder::Level = $Test::Builder::Level + 1;
-
 	my $node          = shift;
 	my $role          = shift;
 	my $password      = shift;
@@ -42,25 +41,17 @@ sub test_login
 
 	$status_string = 'success' if ($expected_res eq 0);
 
-	my $connstr = "user=$role";
-	my $testname =
-	  "authentication $status_string for role $role with password $password";
-
 	$ENV{"PGPASSWORD"} = $password;
-	if ($expected_res eq 0)
-	{
-		$node->connect_ok($connstr, $testname);
-	}
-	else
-	{
-		# No checks of the error message, only the status code.
-		$node->connect_fails($connstr, $testname);
-	}
+	my $res = $node->psql('postgres', undef, extra_params => [ '-U', $role ]);
+	is($res, $expected_res,
+		"authentication $status_string for role $role with password $password"
+	);
+	return;
 }
 
-# Initialize primary node. Force UTF-8 encoding, so that we can use non-ASCII
+# Initialize master node. Force UTF-8 encoding, so that we can use non-ASCII
 # characters in the passwords below.
-my $node = PostgreSQL::Test::Cluster->new('primary');
+my $node = get_new_node('master');
 $node->init(extra => [ '--locale=C', '--encoding=UTF8' ]);
 $node->start;
 
@@ -113,5 +104,3 @@ test_login($node, 'saslpreptest6_role', "foobar",     2);
 test_login($node, 'saslpreptest7_role', "foo\xd8\xa71bar", 0);
 test_login($node, 'saslpreptest7_role', "foo1\xd8\xa7bar", 2);
 test_login($node, 'saslpreptest7_role', "foobar",          2);
-
-done_testing();

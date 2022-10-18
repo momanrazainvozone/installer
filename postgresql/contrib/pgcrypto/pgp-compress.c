@@ -57,13 +57,13 @@ struct ZipStat
 static void *
 z_alloc(void *priv, unsigned n_items, unsigned item_len)
 {
-	return palloc(n_items * item_len);
+	return px_alloc(n_items * item_len);
 }
 
 static void
 z_free(void *priv, void *addr)
 {
-	pfree(addr);
+	px_free(addr);
 }
 
 static int
@@ -80,7 +80,8 @@ compress_init(PushFilter *next, void *init_arg, void **priv_p)
 	/*
 	 * init
 	 */
-	st = palloc0(sizeof(*st));
+	st = px_alloc(sizeof(*st));
+	memset(st, 0, sizeof(*st));
 	st->buf_len = ZIP_OUT_BUF;
 	st->stream.zalloc = z_alloc;
 	st->stream.zfree = z_free;
@@ -92,7 +93,7 @@ compress_init(PushFilter *next, void *init_arg, void **priv_p)
 		res = deflateInit(&st->stream, ctx->compress_level);
 	if (res != Z_OK)
 	{
-		pfree(st);
+		px_free(st);
 		return PXE_PGP_COMPRESSION_ERROR;
 	}
 	*priv_p = st;
@@ -173,7 +174,7 @@ compress_free(void *priv)
 
 	deflateEnd(&st->stream);
 	px_memset(st, 0, sizeof(*st));
-	pfree(st);
+	px_free(st);
 }
 
 static const PushFilterOps
@@ -211,7 +212,8 @@ decompress_init(void **priv_p, void *arg, PullFilter *src)
 		&& ctx->compress_algo != PGP_COMPR_ZIP)
 		return PXE_PGP_UNSUPPORTED_COMPR;
 
-	dec = palloc0(sizeof(*dec));
+	dec = px_alloc(sizeof(*dec));
+	memset(dec, 0, sizeof(*dec));
 	dec->buf_len = ZIP_OUT_BUF;
 	*priv_p = dec;
 
@@ -224,7 +226,7 @@ decompress_init(void **priv_p, void *arg, PullFilter *src)
 		res = inflateInit(&dec->stream);
 	if (res != Z_OK)
 	{
-		pfree(dec);
+		px_free(dec);
 		px_debug("decompress_init: inflateInit error");
 		return PXE_PGP_COMPRESSION_ERROR;
 	}
@@ -291,7 +293,7 @@ restart:
 		 * A stream must be terminated by a normal packet.  If the last stream
 		 * packet in the source stream is a full packet, a normal empty packet
 		 * must follow.  Since the underlying packet reader doesn't know that
-		 * the compressed stream has been ended, we need to consume the
+		 * the compressed stream has been ended, we need to to consume the
 		 * terminating packet here.  This read does not harm even if the
 		 * stream has already ended.
 		 */
@@ -316,7 +318,7 @@ decompress_free(void *priv)
 
 	inflateEnd(&dec->stream);
 	px_memset(dec, 0, sizeof(*dec));
-	pfree(dec);
+	px_free(dec);
 }
 
 static const PullFilterOps

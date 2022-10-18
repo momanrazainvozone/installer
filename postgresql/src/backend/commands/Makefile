@@ -24,9 +24,6 @@ OBJS = \
 	constraint.o \
 	conversioncmds.o \
 	copy.o \
-	copyfrom.o \
-	copyfromparse.o \
-	copyto.o \
 	createas.o \
 	dbcommands.o \
 	define.o \
@@ -59,7 +56,6 @@ OBJS = \
 	typecmds.o \
 	user.o \
 	vacuum.o \
-	vacuumparallel.o \
 	variable.o \
 	view.o
 

@@ -3,7 +3,7 @@
  * execGrouping.c
  *	  executor utility routines for grouping, hashing, and aggregation
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -193,7 +193,7 @@ BuildTupleHashTableExt(PlanState *parent,
 	hashtable->cur_eq_func = NULL;
 
 	/*
-	 * If parallelism is in use, even if the leader backend is performing the
+	 * If parallelism is in use, even if the master backend is performing the
 	 * scan itself, we don't want to create the hashtable exactly the same way
 	 * in all workers. As hashtables are iterated over in keyspace-order,
 	 * doing so in all processes in the same way is likely to lead to
@@ -246,7 +246,7 @@ BuildTupleHashTableExt(PlanState *parent,
 }
 
 /*
- * BuildTupleHashTable is a backwards-compatibility wrapper for
+ * BuildTupleHashTable is a backwards-compatibilty wrapper for
  * BuildTupleHashTableExt(), that allocates the hashtable's metadata in
  * tablecxt. Note that hashtables created this way cannot be reset leak-free
  * with ResetTupleHashTable().
@@ -459,8 +459,8 @@ TupleHashTableHash_internal(struct tuplehash_hash *tb,
 		Datum		attr;
 		bool		isNull;
 
-		/* combine successive hashkeys by rotating */
-		hashkey = pg_rotate_left32(hashkey, 1);
+		/* rotate hashkey left 1 bit at each step */
+		hashkey = (hashkey << 1) | ((hashkey & 0x80000000) ? 1 : 0);
 
 		attr = slot_getattr(slot, att, &isNull);
 

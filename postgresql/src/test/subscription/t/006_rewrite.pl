@@ -1,18 +1,15 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test logical replication behavior with heap rewrites
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 2;
 
-my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
+my $node_publisher = get_new_node('publisher');
 $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
-my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
+my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->start;
 
@@ -28,8 +25,13 @@ $node_subscriber->safe_psql('postgres',
 	"CREATE SUBSCRIPTION mysub CONNECTION '$publisher_connstr' PUBLICATION mypub;"
 );
 
-# Wait for initial sync to finish
-$node_subscriber->wait_for_subscription_sync($node_publisher, 'mysub');
+$node_publisher->wait_for_catchup('mysub');
+
+# Wait for initial sync to finish as well
+my $synced_query =
+  "SELECT count(1) = 0 FROM pg_subscription_rel WHERE srsubstate NOT IN ('s', 'r');";
+$node_subscriber->poll_query_until('postgres', $synced_query)
+  or die "Timed out while waiting for subscriber to synchronize data";
 
 $node_publisher->safe_psql('postgres',
 	q{INSERT INTO test1 (a, b) VALUES (1, 'one'), (2, 'two');});
@@ -61,5 +63,3 @@ is( $node_subscriber->safe_psql('postgres', q{SELECT a, b, c FROM test1}),
 
 $node_subscriber->stop;
 $node_publisher->stop;
-
-done_testing();

@@ -44,14 +44,13 @@
  * Note that there can be more than one worker in a database concurrently.
  * They will store the table they are currently vacuuming in shared memory, so
  * that other workers avoid being blocked waiting for the vacuum lock for that
- * table.  They will also fetch the last time the table was vacuumed from
- * pgstats just before vacuuming each table, to avoid vacuuming a table that
- * was just finished being vacuumed by another worker and thus is no longer
- * noted in shared memory.  However, there is a small window (due to not yet
- * holding the relation lock) during which a worker may choose a table that was
- * already vacuumed; this is a bug in the current design.
+ * table.  They will also reload the pgstats data just before vacuuming each
+ * table, to avoid vacuuming a table that was just finished being vacuumed by
+ * another worker and thus is no longer noted in shared memory.  However,
+ * there is a window (caused by pgstat delay) on which a worker may choose a
+ * table that was already vacuumed; this is a bug in the current design.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -128,7 +127,10 @@ int			autovacuum_multixact_freeze_max_age;
 double		autovacuum_vac_cost_delay;
 int			autovacuum_vac_cost_limit;
 
-int			Log_autovacuum_min_duration = 600000;
+int			Log_autovacuum_min_duration = -1;
+
+/* how long to keep pgstat data in the launcher, in milliseconds */
+#define STATS_READ_DELAY 1000
 
 /* the minimum allowed time between two awakenings of the launcher */
 #define MIN_AUTOVAC_SLEEPTIME 100.0 /* milliseconds */
@@ -326,10 +328,6 @@ static void FreeWorkerInfo(int code, Datum arg);
 static autovac_table *table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 											TupleDesc pg_class_desc,
 											int effective_multixact_freeze_max_age);
-static void recheck_relation_needs_vacanalyze(Oid relid, AutoVacOpts *avopts,
-											  Form_pg_class classForm,
-											  int effective_multixact_freeze_max_age,
-											  bool *dovacuum, bool *doanalyze, bool *wraparound);
 static void relation_needs_vacanalyze(Oid relid, AutoVacOpts *relopts,
 									  Form_pg_class classForm,
 									  PgStat_StatTabEntry *tabentry,
@@ -340,11 +338,15 @@ static void autovacuum_do_vac_analyze(autovac_table *tab,
 									  BufferAccessStrategy bstrategy);
 static AutoVacOpts *extract_autovac_opts(HeapTuple tup,
 										 TupleDesc pg_class_desc);
+static PgStat_StatTabEntry *get_pgstat_tabentry_relid(Oid relid, bool isshared,
+													  PgStat_StatDBEntry *shared,
+													  PgStat_StatDBEntry *dbentry);
 static void perform_work_item(AutoVacuumWorkItem *workitem);
 static void autovac_report_activity(autovac_table *tab);
 static void autovac_report_workitem(AutoVacuumWorkItem *workitem,
 									const char *nspname, const char *relname);
 static void avl_sigusr2_handler(SIGNAL_ARGS);
+static void autovac_refresh_stats(void);
 
 
 
@@ -437,7 +439,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	init_ps_display(NULL);
 
 	ereport(DEBUG1,
-			(errmsg_internal("autovacuum launcher started")));
+			(errmsg("autovacuum launcher started")));
 
 	if (PostAuthDelay)
 		pg_usleep(PostAuthDelay * 1000000L);
@@ -452,8 +454,8 @@ AutoVacLauncherMain(int argc, char *argv[])
 	pqsignal(SIGHUP, SignalHandlerForConfigReload);
 	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, SignalHandlerForShutdownRequest);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
 
+	pqsignal(SIGQUIT, quickdie);
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
@@ -461,6 +463,9 @@ AutoVacLauncherMain(int argc, char *argv[])
 	pqsignal(SIGUSR2, avl_sigusr2_handler);
 	pqsignal(SIGFPE, FloatExceptionHandler);
 	pqsignal(SIGCHLD, SIG_DFL);
+
+	/* Early initialization */
+	BaseInit();
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory, except in the
@@ -472,10 +477,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 	InitProcess();
 #endif
 
-	/* Early initialization */
-	BaseInit();
-
-	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, false, false, NULL);
+	InitPostgres(NULL, InvalidOid, NULL, InvalidOid, NULL, false);
 
 	SetProcessingMode(NormalProcessing);
 
@@ -493,13 +495,6 @@ AutoVacLauncherMain(int argc, char *argv[])
 	 * If an exception is encountered, processing resumes here.
 	 *
 	 * This code is a stripped down version of PostgresMain error recovery.
-	 *
-	 * Note that we use sigsetjmp(..., 1), so that the prevailing signal mask
-	 * (to wit, BlockSig) will be restored when longjmp'ing to here.  Thus,
-	 * signals other than SIGQUIT will be blocked until we complete error
-	 * recovery.  It might seem that this policy makes the HOLD_INTERRUPTS()
-	 * call redundant, but it is not since InterruptPending might be set
-	 * already.
 	 */
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
 	{
@@ -548,6 +543,12 @@ AutoVacLauncherMain(int argc, char *argv[])
 		/* don't leave dangling pointers to freed memory */
 		DatabaseListCxt = NULL;
 		dlist_init(&DatabaseList);
+
+		/*
+		 * Make sure pgstat also considers our stat data as gone.  Note: we
+		 * mustn't use autovac_refresh_stats here.
+		 */
+		pgstat_clear_snapshot();
 
 		/* Now we can allow interrupts again */
 		RESUME_INTERRUPTS();
@@ -598,12 +599,6 @@ AutoVacLauncherMain(int argc, char *argv[])
 	 */
 	SetConfigOption("default_transaction_isolation", "read committed",
 					PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
-	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
 
 	/*
 	 * In emergency mode, just start a worker (unless shutdown was requested)
@@ -748,8 +743,7 @@ AutoVacLauncherMain(int argc, char *argv[])
 					dlist_push_head(&AutoVacuumShmem->av_freeWorkers,
 									&worker->wi_links);
 					AutoVacuumShmem->av_startingWorker = NULL;
-					ereport(WARNING,
-							errmsg("autovacuum worker took too long to start; canceled"));
+					elog(WARNING, "worker took too long to start; canceled");
 				}
 			}
 			else
@@ -831,10 +825,6 @@ HandleAutoVacLauncherInterrupts(void)
 	if (ProcSignalBarrierPending)
 		ProcessProcSignalBarrier();
 
-	/* Perform logging of memory contexts of this process */
-	if (LogMemoryContextPending)
-		ProcessLogMemoryContextInterrupt();
-
 	/* Process sinval catchup interrupts that happened while sleeping */
 	ProcessCatchupInterrupt();
 }
@@ -846,7 +836,7 @@ static void
 AutoVacLauncherShutdown(void)
 {
 	ereport(DEBUG1,
-			(errmsg_internal("autovacuum launcher shutting down")));
+			(errmsg("autovacuum launcher shutting down")));
 	AutoVacuumShmem->av_launcherpid = 0;
 
 	proc_exit(0);				/* done */
@@ -957,11 +947,14 @@ rebuild_database_list(Oid newdb)
 	HTAB	   *dbhash;
 	dlist_iter	iter;
 
+	/* use fresh stats */
+	autovac_refresh_stats();
+
 	newcxt = AllocSetContextCreate(AutovacMemCxt,
-								   "Autovacuum database list",
+								   "AV dblist",
 								   ALLOCSET_DEFAULT_SIZES);
 	tmpcxt = AllocSetContextCreate(newcxt,
-								   "Autovacuum database list (tmp)",
+								   "tmp AV dblist",
 								   ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(tmpcxt);
 
@@ -984,8 +977,7 @@ rebuild_database_list(Oid newdb)
 	hctl.keysize = sizeof(Oid);
 	hctl.entrysize = sizeof(avl_dbase);
 	hctl.hcxt = tmpcxt;
-	dbhash = hash_create("autovacuum db hash", 20, &hctl,	/* magic number here
-															 * FIXME */
+	dbhash = hash_create("db hash", 20, &hctl,	/* magic number here FIXME */
 						 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 
 	/* start by inserting the new database */
@@ -1172,9 +1164,12 @@ do_start_worker(void)
 	 * allocated for the database list.
 	 */
 	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
-								   "Autovacuum start worker (tmp)",
+								   "Start worker tmp cxt",
 								   ALLOCSET_DEFAULT_SIZES);
 	oldcxt = MemoryContextSwitchTo(tmpcxt);
+
+	/* use fresh stats */
+	autovac_refresh_stats();
 
 	/* Get a list of databases */
 	dblist = get_database_list();
@@ -1184,7 +1179,7 @@ do_start_worker(void)
 	 * pass without forcing a vacuum.  (This limit can be tightened for
 	 * particular tables, but not loosened.)
 	 */
-	recentXid = ReadNextTransactionId();
+	recentXid = ReadNewTransactionId();
 	xidForceLimit = recentXid - autovacuum_freeze_max_age;
 	/* ensure it's a "normal" XID, else TransactionIdPrecedes misbehaves */
 	/* this can cause the limit to go backwards by 3, but that's OK */
@@ -1530,8 +1525,7 @@ AutoVacWorkerMain(int argc, char *argv[])
 	 */
 	pqsignal(SIGINT, StatementCancelHandler);
 	pqsignal(SIGTERM, die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
-
+	pqsignal(SIGQUIT, quickdie);
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
@@ -1539,6 +1533,9 @@ AutoVacWorkerMain(int argc, char *argv[])
 	pqsignal(SIGUSR2, SIG_IGN);
 	pqsignal(SIGFPE, FloatExceptionHandler);
 	pqsignal(SIGCHLD, SIG_DFL);
+
+	/* Early initialization */
+	BaseInit();
 
 	/*
 	 * Create a per-backend PGPROC struct in shared memory, except in the
@@ -1550,21 +1547,10 @@ AutoVacWorkerMain(int argc, char *argv[])
 	InitProcess();
 #endif
 
-	/* Early initialization */
-	BaseInit();
-
 	/*
 	 * If an exception is encountered, processing resumes here.
 	 *
-	 * Unlike most auxiliary processes, we don't attempt to continue
-	 * processing after an error; we just clean up and exit.  The autovac
-	 * launcher is responsible for spawning another worker later.
-	 *
-	 * Note that we use sigsetjmp(..., 1), so that the prevailing signal mask
-	 * (to wit, BlockSig) will be restored when longjmp'ing to here.  Thus,
-	 * signals other than SIGQUIT will be blocked until we exit.  It might
-	 * seem that this policy makes the HOLD_INTERRUPTS() call redundant, but
-	 * it is not since InterruptPending might be set already.
+	 * See notes in postgres.c about the design of this coding.
 	 */
 	if (sigsetjmp(local_sigjmp_buf, 1) != 0)
 	{
@@ -1632,12 +1618,6 @@ AutoVacWorkerMain(int argc, char *argv[])
 						PGC_SUSET, PGC_S_OVERRIDE);
 
 	/*
-	 * Even when system is configured to use a different fetch consistency,
-	 * for autovac we always want fresh stats.
-	 */
-	SetConfigOption("stats_fetch_consistency", "none", PGC_SUSET, PGC_S_OVERRIDE);
-
-	/*
 	 * Get the info about the database we're going to work on.
 	 */
 	LWLockAcquire(AutovacuumLock, LW_EXCLUSIVE);
@@ -1684,33 +1664,32 @@ AutoVacWorkerMain(int argc, char *argv[])
 		char		dbname[NAMEDATALEN];
 
 		/*
-		 * Report autovac startup to the cumulative stats system.  We
-		 * deliberately do this before InitPostgres, so that the
-		 * last_autovac_time will get updated even if the connection attempt
-		 * fails.  This is to prevent autovac from getting "stuck" repeatedly
-		 * selecting an unopenable database, rather than making any progress
-		 * on stuff it can connect to.
+		 * Report autovac startup to the stats collector.  We deliberately do
+		 * this before InitPostgres, so that the last_autovac_time will get
+		 * updated even if the connection attempt fails.  This is to prevent
+		 * autovac from getting "stuck" repeatedly selecting an unopenable
+		 * database, rather than making any progress on stuff it can connect
+		 * to.
 		 */
 		pgstat_report_autovac(dbid);
 
 		/*
-		 * Connect to the selected database, specifying no particular user
+		 * Connect to the selected database
 		 *
 		 * Note: if we have selected a just-deleted database (due to using
 		 * stale stats info), we'll fail and exit here.
 		 */
-		InitPostgres(NULL, dbid, NULL, InvalidOid, false, false,
-					 dbname);
+		InitPostgres(NULL, dbid, NULL, InvalidOid, dbname, false);
 		SetProcessingMode(NormalProcessing);
 		set_ps_display(dbname);
 		ereport(DEBUG1,
-				(errmsg_internal("autovacuum: processing database \"%s\"", dbname)));
+				(errmsg("autovacuum: processing database \"%s\"", dbname)));
 
 		if (PostAuthDelay)
 			pg_usleep(PostAuthDelay * 1000000L);
 
 		/* And do an appropriate amount of work */
-		recentXid = ReadNextTransactionId();
+		recentXid = ReadNewTransactionId();
 		recentMulti = ReadNextMultiXactId();
 		do_autovacuum();
 	}
@@ -1860,7 +1839,7 @@ autovac_balance_cost(void)
 		}
 
 		if (worker->wi_proc != NULL)
-			elog(DEBUG2, "autovac_balance_cost(pid=%d db=%u, rel=%u, dobalance=%s cost_limit=%d, cost_limit_base=%d, cost_delay=%g)",
+			elog(DEBUG2, "autovac_balance_cost(pid=%u db=%u, rel=%u, dobalance=%s cost_limit=%d, cost_limit_base=%d, cost_delay=%g)",
 				 worker->wi_proc->pid, worker->wi_dboid, worker->wi_tableoid,
 				 worker->wi_dobalance ? "yes" : "no",
 				 worker->wi_cost_limit, worker->wi_cost_limit_base,
@@ -1898,10 +1877,6 @@ get_database_list(void)
 	 * the secondary effect that it sets RecentGlobalXmin.  (This is critical
 	 * for anything that reads heap pages, because HOT may decide to prune
 	 * them even if the process doesn't attempt to modify any tuples.)
-	 *
-	 * FIXME: This comment is inaccurate / the code buggy. A snapshot that is
-	 * not pushed/active does not reliably prevent HOT pruning (->xmin could
-	 * e.g. be cleared when cache invalidations are processed).
 	 */
 	StartTransactionCommand();
 	(void) GetTransactionSnapshot();
@@ -1941,9 +1916,6 @@ get_database_list(void)
 
 	CommitTransactionCommand();
 
-	/* Be sure to restore caller's memory context */
-	MemoryContextSwitchTo(resultcxt);
-
 	return dblist;
 }
 
@@ -1965,6 +1937,8 @@ do_autovacuum(void)
 	HASHCTL		ctl;
 	HTAB	   *table_toast_map;
 	ListCell   *volatile cell;
+	PgStat_StatDBEntry *shared;
+	PgStat_StatDBEntry *dbentry;
 	BufferAccessStrategy bstrategy;
 	ScanKeyData key;
 	TupleDesc	pg_class_desc;
@@ -1979,12 +1953,25 @@ do_autovacuum(void)
 	 * relations to vacuum/analyze across transactions.
 	 */
 	AutovacMemCxt = AllocSetContextCreate(TopMemoryContext,
-										  "Autovacuum worker",
+										  "AV worker",
 										  ALLOCSET_DEFAULT_SIZES);
 	MemoryContextSwitchTo(AutovacMemCxt);
 
+	/*
+	 * may be NULL if we couldn't find an entry (only happens if we are
+	 * forcing a vacuum for anti-wrap purposes).
+	 */
+	dbentry = pgstat_fetch_stat_dbentry(MyDatabaseId);
+
 	/* Start a transaction so our commands have one to play into. */
 	StartTransactionCommand();
+
+	/*
+	 * Clean up any dead statistics collector entries for this DB. We always
+	 * want to do this exactly once per DB-processing cycle, even if we find
+	 * nothing worth vacuuming in the database.
+	 */
+	pgstat_vacuum_stat();
 
 	/*
 	 * Compute the multixact age for which freezing is urgent.  This is
@@ -2023,12 +2010,16 @@ do_autovacuum(void)
 	/* StartTransactionCommand changed elsewhere */
 	MemoryContextSwitchTo(AutovacMemCxt);
 
+	/* The database hash where pgstat keeps shared relations */
+	shared = pgstat_fetch_stat_dbentry(InvalidOid);
+
 	classRel = table_open(RelationRelationId, AccessShareLock);
 
 	/* create a copy so we can use it after closing pg_class */
 	pg_class_desc = CreateTupleDescCopy(RelationGetDescr(classRel));
 
 	/* create hash table for toast <-> main relid mapping */
+	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(av_relation);
 
@@ -2100,8 +2091,8 @@ do_autovacuum(void)
 
 		/* Fetch reloptions and the pgstat entry for this table */
 		relopts = extract_autovac_opts(tuple, pg_class_desc);
-		tabentry = pgstat_fetch_stat_tabentry_ext(classForm->relisshared,
-												  relid);
+		tabentry = get_pgstat_tabentry_relid(relid, classForm->relisshared,
+											 shared, dbentry);
 
 		/* Check if it needs vacuum or analyze */
 		relation_needs_vacanalyze(relid, relopts, classForm, tabentry,
@@ -2184,8 +2175,8 @@ do_autovacuum(void)
 		}
 
 		/* Fetch the pgstat entry for this table */
-		tabentry = pgstat_fetch_stat_tabentry_ext(classForm->relisshared,
-												  relid);
+		tabentry = get_pgstat_tabentry_relid(relid, classForm->relisshared,
+											 shared, dbentry);
 
 		relation_needs_vacanalyze(relid, relopts, classForm, tabentry,
 								  effective_multixact_freeze_max_age,
@@ -2399,8 +2390,12 @@ do_autovacuum(void)
 		/*
 		 * Check whether pgstat data still says we need to vacuum this table.
 		 * It could have changed if something else processed the table while
-		 * we weren't looking. This doesn't entirely close the race condition,
-		 * but it is very small.
+		 * we weren't looking.
+		 *
+		 * Note: we have a special case in pgstat code to ensure that the
+		 * stats we read are as up-to-date as possible, to avoid the problem
+		 * that somebody just finished vacuuming this table.  The window to
+		 * the race condition is not closed but it is very small.
 		 */
 		MemoryContextSwitchTo(AutovacMemCxt);
 		tab = table_recheck_autovac(relid, table_toast_map, pg_class_desc,
@@ -2494,7 +2489,7 @@ do_autovacuum(void)
 						   tab->at_datname, tab->at_nspname, tab->at_relname);
 			EmitErrorReport();
 
-			/* this resets ProcGlobal->statusFlags[i] too */
+			/* this resets the PGXACT flags too */
 			AbortOutOfAnyTransaction();
 			FlushErrorState();
 			MemoryContextResetAndDeleteChildren(PortalContext);
@@ -2510,7 +2505,7 @@ do_autovacuum(void)
 
 		did_vacuum = true;
 
-		/* ProcGlobal->statusFlags[i] are reset at the next end of xact */
+		/* the PGXACT flags are reset at the next end of transaction */
 
 		/* be tidy */
 deleted:
@@ -2687,7 +2682,7 @@ perform_work_item(AutoVacuumWorkItem *workitem)
 				   cur_datname, cur_nspname, cur_relname);
 		EmitErrorReport();
 
-		/* this resets ProcGlobal->statusFlags[i] too */
+		/* this resets the PGXACT flags too */
 		AbortOutOfAnyTransaction();
 		FlushErrorState();
 		MemoryContextResetAndDeleteChildren(PortalContext);
@@ -2718,11 +2713,6 @@ deleted2:
  *
  * Given a relation's pg_class tuple, return the AutoVacOpts portion of
  * reloptions, if set; otherwise, return NULL.
- *
- * Note: callers do not have a relation lock on the table at this point,
- * so the table could have been dropped, and its catalog rows gone, after
- * we acquired the pg_class row.  If pg_class had a TOAST table, this would
- * be a risk; fortunately, it doesn't.
  */
 static AutoVacOpts *
 extract_autovac_opts(HeapTuple tup, TupleDesc pg_class_desc)
@@ -2745,6 +2735,29 @@ extract_autovac_opts(HeapTuple tup, TupleDesc pg_class_desc)
 	return av;
 }
 
+/*
+ * get_pgstat_tabentry_relid
+ *
+ * Fetch the pgstat entry of a table, either local to a database or shared.
+ */
+static PgStat_StatTabEntry *
+get_pgstat_tabentry_relid(Oid relid, bool isshared, PgStat_StatDBEntry *shared,
+						  PgStat_StatDBEntry *dbentry)
+{
+	PgStat_StatTabEntry *tabentry = NULL;
+
+	if (isshared)
+	{
+		if (PointerIsValid(shared))
+			tabentry = hash_search(shared->tables, &relid,
+								   HASH_FIND, NULL);
+	}
+	else if (PointerIsValid(dbentry))
+		tabentry = hash_search(dbentry->tables, &relid,
+							   HASH_FIND, NULL);
+
+	return tabentry;
+}
 
 /*
  * table_recheck_autovac
@@ -2764,8 +2777,17 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 	bool		dovacuum;
 	bool		doanalyze;
 	autovac_table *tab = NULL;
+	PgStat_StatTabEntry *tabentry;
+	PgStat_StatDBEntry *shared;
+	PgStat_StatDBEntry *dbentry;
 	bool		wraparound;
 	AutoVacOpts *avopts;
+
+	/* use fresh stats */
+	autovac_refresh_stats();
+
+	shared = pgstat_fetch_stat_dbentry(InvalidOid);
+	dbentry = pgstat_fetch_stat_dbentry(MyDatabaseId);
 
 	/* fetch the relation's relcache entry */
 	classTup = SearchSysCacheCopy1(RELOID, ObjectIdGetDatum(relid));
@@ -2789,9 +2811,17 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 			avopts = &hentry->ar_reloptions;
 	}
 
-	recheck_relation_needs_vacanalyze(relid, avopts, classForm,
-									  effective_multixact_freeze_max_age,
-									  &dovacuum, &doanalyze, &wraparound);
+	/* fetch the pgstat table entry */
+	tabentry = get_pgstat_tabentry_relid(relid, classForm->relisshared,
+										 shared, dbentry);
+
+	relation_needs_vacanalyze(relid, avopts, classForm, tabentry,
+							  effective_multixact_freeze_max_age,
+							  &dovacuum, &doanalyze, &wraparound);
+
+	/* ignore ANALYZE for toast tables */
+	if (classForm->relkind == RELKIND_TOASTVALUE)
+		doanalyze = false;
 
 	/* OK, it needs something done */
 	if (doanalyze || dovacuum)
@@ -2852,19 +2882,12 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 		tab = palloc(sizeof(autovac_table));
 		tab->at_relid = relid;
 		tab->at_sharedrel = classForm->relisshared;
-
-		/* Note that this skips toast relations */
-		tab->at_params.options = (dovacuum ? VACOPT_VACUUM : 0) |
+		tab->at_params.options = VACOPT_SKIPTOAST |
+			(dovacuum ? VACOPT_VACUUM : 0) |
 			(doanalyze ? VACOPT_ANALYZE : 0) |
 			(!wraparound ? VACOPT_SKIP_LOCKED : 0);
-
-		/*
-		 * index_cleanup and truncate are unspecified at first in autovacuum.
-		 * They will be filled in with usable values using their reloptions
-		 * (or reloption defaults) later.
-		 */
-		tab->at_params.index_cleanup = VACOPTVALUE_UNSPECIFIED;
-		tab->at_params.truncate = VACOPTVALUE_UNSPECIFIED;
+		tab->at_params.index_cleanup = VACOPT_TERNARY_DEFAULT;
+		tab->at_params.truncate = VACOPT_TERNARY_DEFAULT;
 		/* As of now, we don't support parallel vacuum for autovacuum */
 		tab->at_params.nworkers = -1;
 		tab->at_params.freeze_min_age = freeze_min_age;
@@ -2889,39 +2912,8 @@ table_recheck_autovac(Oid relid, HTAB *table_toast_map,
 	}
 
 	heap_freetuple(classTup);
+
 	return tab;
-}
-
-/*
- * recheck_relation_needs_vacanalyze
- *
- * Subroutine for table_recheck_autovac.
- *
- * Fetch the pgstat of a relation and recheck whether a relation
- * needs to be vacuumed or analyzed.
- */
-static void
-recheck_relation_needs_vacanalyze(Oid relid,
-								  AutoVacOpts *avopts,
-								  Form_pg_class classForm,
-								  int effective_multixact_freeze_max_age,
-								  bool *dovacuum,
-								  bool *doanalyze,
-								  bool *wraparound)
-{
-	PgStat_StatTabEntry *tabentry;
-
-	/* fetch the pgstat table entry */
-	tabentry = pgstat_fetch_stat_tabentry_ext(classForm->relisshared,
-											  relid);
-
-	relation_needs_vacanalyze(relid, avopts, classForm, tabentry,
-							  effective_multixact_freeze_max_age,
-							  dovacuum, doanalyze, wraparound);
-
-	/* ignore ANALYZE for toast tables */
-	if (classForm->relkind == RELKIND_TOASTVALUE)
-		*doanalyze = false;
 }
 
 /*
@@ -2943,7 +2935,7 @@ recheck_relation_needs_vacanalyze(Oid relid,
  *
  * For analyze, the analysis done is that the number of tuples inserted,
  * deleted and updated since the last analyze exceeds a threshold calculated
- * in the same fashion as above.  Note that the cumulative stats system stores
+ * in the same fashion as above.  Note that the collector actually stores
  * the number of tuples (both live and dead) that there were as of the last
  * analyze.  This is asymmetric to the VACUUM case.
  *
@@ -2953,8 +2945,8 @@ recheck_relation_needs_vacanalyze(Oid relid,
  *
  * A table whose autovacuum_enabled option is false is
  * automatically skipped (unless we have to vacuum it due to freeze_max_age).
- * Thus autovacuum can be disabled for specific tables. Also, when the cumulative
- * stats system does not have data about a table, it will be skipped.
+ * Thus autovacuum can be disabled for specific tables. Also, when the stats
+ * collector does not have data about a table, it will be skipped.
  *
  * A table whose vac_base_thresh value is < 0 takes the base value from the
  * autovacuum_vacuum_threshold GUC variable.  Similarly, a vac_scale_factor
@@ -3071,11 +3063,11 @@ relation_needs_vacanalyze(Oid relid,
 	}
 
 	/*
-	 * If we found stats for the table, and autovacuum is currently enabled,
-	 * make a threshold-based decision whether to vacuum and/or analyze.  If
-	 * autovacuum is currently disabled, we must be here for anti-wraparound
-	 * vacuuming only, so don't vacuum (or analyze) anything that's not being
-	 * forced.
+	 * If we found the table in the stats hash, and autovacuum is currently
+	 * enabled, make a threshold-based decision whether to vacuum and/or
+	 * analyze.  If autovacuum is currently disabled, we must be here for
+	 * anti-wraparound vacuuming only, so don't vacuum (or analyze) anything
+	 * that's not being forced.
 	 */
 	if (PointerIsValid(tabentry) && AutoVacuumingActive())
 	{
@@ -3083,10 +3075,6 @@ relation_needs_vacanalyze(Oid relid,
 		vactuples = tabentry->n_dead_tuples;
 		instuples = tabentry->inserts_since_vacuum;
 		anltuples = tabentry->changes_since_analyze;
-
-		/* If the table hasn't yet been vacuumed, take reltuples as zero */
-		if (reltuples < 0)
-			reltuples = 0;
 
 		vacthresh = (float4) vac_base_thresh + vac_scale_factor * reltuples;
 		vacinsthresh = (float4) vac_ins_base_thresh + vac_ins_scale_factor * reltuples;
@@ -3373,4 +3361,36 @@ AutoVacuumShmemInit(void)
 	}
 	else
 		Assert(found);
+}
+
+/*
+ * autovac_refresh_stats
+ *		Refresh pgstats data for an autovacuum process
+ *
+ * Cause the next pgstats read operation to obtain fresh data, but throttle
+ * such refreshing in the autovacuum launcher.  This is mostly to avoid
+ * rereading the pgstats files too many times in quick succession when there
+ * are many databases.
+ *
+ * Note: we avoid throttling in the autovac worker, as it would be
+ * counterproductive in the recheck logic.
+ */
+static void
+autovac_refresh_stats(void)
+{
+	if (IsAutoVacuumLauncherProcess())
+	{
+		static TimestampTz last_read = 0;
+		TimestampTz current_time;
+
+		current_time = GetCurrentTimestamp();
+
+		if (!TimestampDifferenceExceeds(last_read, current_time,
+										STATS_READ_DELAY))
+			return;
+
+		last_read = current_time;
+	}
+
+	pgstat_clear_snapshot();
 }

@@ -2,7 +2,7 @@
  * brinfuncs.c
  *		Functions to investigate BRIN indexes
  *
- * Copyright (c) 2014-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		contrib/pageinspect/brinfuncs.c
@@ -63,12 +63,12 @@ brin_page_type(PG_FUNCTION_ARGS)
 
 	/* verify the special space has the expected size */
 	if (PageGetSpecialSize(page) != MAXALIGN(sizeof(BrinSpecialSpace)))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("input page is not a valid %s page", "BRIN"),
-				 errdetail("Expected special size %d, got %d.",
-						   (int) MAXALIGN(sizeof(BrinSpecialSpace)),
-						   (int) PageGetSpecialSize(page))));
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("input page is not a valid %s page", "BRIN"),
+					 errdetail("Expected special size %d, got %d.",
+							   (int) MAXALIGN(sizeof(BrinSpecialSpace)),
+							   (int) PageGetSpecialSize(page))));
 
 	switch (BrinPageType(page))
 	{
@@ -103,12 +103,12 @@ verify_brin_page(bytea *raw_page, uint16 type, const char *strtype)
 
 	/* verify the special space has the expected size */
 	if (PageGetSpecialSize(page) != MAXALIGN(sizeof(BrinSpecialSpace)))
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("input page is not a valid %s page", "BRIN"),
-				 errdetail("Expected special size %d, got %d.",
-						   (int) MAXALIGN(sizeof(BrinSpecialSpace)),
-						   (int) PageGetSpecialSize(page))));
+			ereport(ERROR,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("input page is not a valid %s page", "BRIN"),
+					 errdetail("Expected special size %d, got %d.",
+							   (int) MAXALIGN(sizeof(BrinSpecialSpace)),
+							   (int) PageGetSpecialSize(page))));
 
 	/* verify the special space says this page is what we want */
 	if (BrinPageType(page) != type)
@@ -133,6 +133,9 @@ brin_page_items(PG_FUNCTION_ARGS)
 	bytea	   *raw_page = PG_GETARG_BYTEA_P(0);
 	Oid			indexRelid = PG_GETARG_OID(1);
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	MemoryContext oldcontext;
+	Tuplestorestate *tupstore;
 	Relation	indexRel;
 	brin_column_state **columns;
 	BrinDesc   *bdesc;
@@ -147,7 +150,30 @@ brin_page_items(PG_FUNCTION_ARGS)
 				(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
 				 errmsg("must be superuser to use raw page functions")));
 
-	SetSingleFuncCall(fcinfo, 0);
+	/* check to see if caller supports us returning a tuplestore */
+	if (rsinfo == NULL || !IsA(rsinfo, ReturnSetInfo))
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("set-valued function called in context that cannot accept a set")));
+	if (!(rsinfo->allowedModes & SFRM_Materialize) ||
+		rsinfo->expectedDesc == NULL)
+		ereport(ERROR,
+				(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				 errmsg("materialize mode required, but it is not allowed in this context")));
+
+	/* Build a tuple descriptor for our result type */
+	if (get_call_result_type(fcinfo, NULL, &tupdesc) != TYPEFUNC_COMPOSITE)
+		elog(ERROR, "return type must be a row type");
+
+	/* Build tuplestore to hold the result rows */
+	oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
 
 	indexRel = index_open(indexRelid, AccessShareLock);
 
@@ -247,18 +273,7 @@ brin_page_items(PG_FUNCTION_ARGS)
 			int			att = attno - 1;
 
 			values[0] = UInt16GetDatum(offset);
-			switch (TupleDescAttr(rsinfo->setDesc, 1)->atttypid)
-			{
-				case INT8OID:
-					values[1] = Int64GetDatum((int64) dtup->bt_blkno);
-					break;
-				case INT4OID:
-					/* support for old extension version */
-					values[1] = UInt32GetDatum(dtup->bt_blkno);
-					break;
-				default:
-					elog(ERROR, "incorrect output types");
-			}
+			values[1] = UInt32GetDatum(dtup->bt_blkno);
 			values[2] = UInt16GetDatum(attno);
 			values[3] = BoolGetDatum(dtup->bt_columns[att].bv_allnulls);
 			values[4] = BoolGetDatum(dtup->bt_columns[att].bv_hasnulls);
@@ -297,7 +312,7 @@ brin_page_items(PG_FUNCTION_ARGS)
 			}
 		}
 
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 
 		/*
 		 * If the item was unused, jump straight to the next one; otherwise,
@@ -320,7 +335,9 @@ brin_page_items(PG_FUNCTION_ARGS)
 			break;
 	}
 
+	/* clean up and return the tuplestore */
 	brin_free_desc(bdesc);
+	tuplestore_donestoring(tupstore);
 	index_close(indexRel, AccessShareLock);
 
 	return (Datum) 0;

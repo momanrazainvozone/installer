@@ -3,7 +3,7 @@
  * parse_clause.c
  *	  handle clauses in parser
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -58,6 +58,7 @@ static int	extractRemainingColumns(ParseNamespaceColumn *src_nscolumns,
 									List **res_colnames, List **res_colvars,
 									ParseNamespaceColumn *res_nscolumns);
 static Node *transformJoinUsingClause(ParseState *pstate,
+									  RangeTblEntry *leftRTE, RangeTblEntry *rightRTE,
 									  List *leftVars, List *rightVars);
 static Node *transformJoinOnClause(ParseState *pstate, JoinExpr *j,
 								   List *namespace);
@@ -301,6 +302,7 @@ extractRemainingColumns(ParseNamespaceColumn *src_nscolumns,
  */
 static Node *
 transformJoinUsingClause(ParseState *pstate,
+						 RangeTblEntry *leftRTE, RangeTblEntry *rightRTE,
 						 List *leftVars, List *rightVars)
 {
 	Node	   *result;
@@ -323,8 +325,8 @@ transformJoinUsingClause(ParseState *pstate,
 		A_Expr	   *e;
 
 		/* Require read access to the join variables */
-		markVarForSelectPriv(pstate, lvar);
-		markVarForSelectPriv(pstate, rvar);
+		markVarForSelectPriv(pstate, lvar, leftRTE);
+		markVarForSelectPriv(pstate, rvar, rightRTE);
 
 		/* Now create the lvar = rvar join condition */
 		e = makeSimpleA_Expr(AEXPR_OP, "=",
@@ -539,10 +541,10 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 				list_length(fc->args) > 1 &&
 				fc->agg_order == NIL &&
 				fc->agg_filter == NULL &&
-				fc->over == NULL &&
 				!fc->agg_star &&
 				!fc->agg_distinct &&
 				!fc->func_variadic &&
+				fc->over == NULL &&
 				coldeflist == NIL)
 			{
 				ListCell   *lc;
@@ -556,7 +558,6 @@ transformRangeFunction(ParseState *pstate, RangeFunction *r)
 
 					newfc = makeFuncCall(SystemFuncName("unnest"),
 										 list_make1(arg),
-										 COERCE_EXPLICIT_CALL,
 										 fc->location);
 
 					newfexpr = transformExpr(pstate, (Node *) newfc,
@@ -852,7 +853,7 @@ transformRangeTableFunc(ParseState *pstate, RangeTableFunc *rtf)
 			{
 				foreach(lc2, ns_names)
 				{
-					String	   *ns_node = lfirst_node(String, lc2);
+					Value	   *ns_node = (Value *) lfirst(lc2);
 
 					if (ns_node == NULL)
 						continue;
@@ -1054,9 +1055,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 						ParseNamespaceItem **top_nsitem,
 						List **namespace)
 {
-	/* Guard against stack overflow due to overly deep subtree */
-	check_stack_depth();
-
 	if (IsA(n, RangeVar))
 	{
 		/* Plain relation reference, or perhaps a CTE reference */
@@ -1219,9 +1217,9 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * input column numbers more easily.
 		 */
 		l_nscolumns = l_nsitem->p_nscolumns;
-		l_colnames = l_nsitem->p_names->colnames;
+		l_colnames = l_nsitem->p_rte->eref->colnames;
 		r_nscolumns = r_nsitem->p_nscolumns;
-		r_colnames = r_nsitem->p_names->colnames;
+		r_colnames = r_nsitem->p_rte->eref->colnames;
 
 		/*
 		 * Natural join does not explicitly specify columns; must generate
@@ -1243,7 +1241,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			foreach(lx, l_colnames)
 			{
 				char	   *l_colname = strVal(lfirst(lx));
-				String	   *m_name = NULL;
+				Value	   *m_name = NULL;
 
 				if (l_colname[0] == '\0')
 					continue;	/* ignore dropped columns */
@@ -1266,13 +1264,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 
 			j->usingClause = rlist;
 		}
-
-		/*
-		 * If a USING clause alias was specified, save the USING columns as
-		 * its column list.
-		 */
-		if (j->join_using_alias)
-			j->join_using_alias->colnames = j->usingClause;
 
 		/*
 		 * Now transform the join qualifications, if any.
@@ -1418,6 +1409,8 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			}
 
 			j->quals = transformJoinUsingClause(pstate,
+												l_nsitem->p_rte,
+												r_nsitem->p_rte,
 												l_usingvars,
 												r_usingvars);
 		}
@@ -1454,7 +1447,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 										   res_colvars,
 										   l_colnos,
 										   r_colnos,
-										   j->join_using_alias,
 										   j->alias,
 										   true);
 
@@ -1464,7 +1456,7 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 		 * Now that we know the join RTE's rangetable index, we can fix up the
 		 * res_nscolumns data in places where it should contain that.
 		 */
-		Assert(res_colindex == list_length(nsitem->p_names->colnames));
+		Assert(res_colindex == list_length(nsitem->p_rte->eref->colnames));
 		for (k = 0; k < res_colindex; k++)
 		{
 			ParseNamespaceColumn *nscol = res_nscolumns + k;
@@ -1487,30 +1479,6 @@ transformFromClauseItem(ParseState *pstate, Node *n,
 			pstate->p_joinexprs = lappend(pstate->p_joinexprs, NULL);
 		pstate->p_joinexprs = lappend(pstate->p_joinexprs, j);
 		Assert(list_length(pstate->p_joinexprs) == j->rtindex);
-
-		/*
-		 * If the join has a USING alias, build a ParseNamespaceItem for that
-		 * and add it to the list of nsitems in the join's input.
-		 */
-		if (j->join_using_alias)
-		{
-			ParseNamespaceItem *jnsitem;
-
-			jnsitem = (ParseNamespaceItem *) palloc(sizeof(ParseNamespaceItem));
-			jnsitem->p_names = j->join_using_alias;
-			jnsitem->p_rte = nsitem->p_rte;
-			jnsitem->p_rtindex = nsitem->p_rtindex;
-			/* no need to copy the first N columns, just use res_nscolumns */
-			jnsitem->p_nscolumns = res_nscolumns;
-			/* set default visibility flags; might get changed later */
-			jnsitem->p_rel_visible = true;
-			jnsitem->p_cols_visible = true;
-			jnsitem->p_lateral_only = false;
-			jnsitem->p_lateral_ok = true;
-			/* Per SQL, we must check for alias conflicts */
-			checkNameSpaceConflicts(pstate, list_make1(jnsitem), my_namespace);
-			my_namespace = lappend(my_namespace, jnsitem);
-		}
 
 		/*
 		 * Prepare returned namespace list.  If the JOIN has an alias then it
@@ -1585,13 +1553,24 @@ buildMergedJoinVar(ParseState *pstate, JoinType jointype,
 			   *r_node,
 			   *res_node;
 
-	outcoltype = select_common_type(pstate,
-									list_make2(l_colvar, r_colvar),
-									"JOIN/USING",
-									NULL);
-	outcoltypmod = select_common_typmod(pstate,
+	/*
+	 * Choose output type if input types are dissimilar.
+	 */
+	outcoltype = l_colvar->vartype;
+	outcoltypmod = l_colvar->vartypmod;
+	if (outcoltype != r_colvar->vartype)
+	{
+		outcoltype = select_common_type(pstate,
 										list_make2(l_colvar, r_colvar),
-										outcoltype);
+										"JOIN/USING",
+										NULL);
+		outcoltypmod = -1;		/* ie, unknown */
+	}
+	else if (outcoltypmod != r_colvar->vartypmod)
+	{
+		/* same type, but not same typmod */
+		outcoltypmod = -1;		/* ie, unknown */
+	}
 
 	/*
 	 * Insert coercion functions if needed.  Note that a difference in typmod
@@ -1773,7 +1752,7 @@ transformLimitClause(ParseState *pstate, Node *clause,
 	 * unadorned NULL that's not accepted back by the grammar.
 	 */
 	if (exprKind == EXPR_KIND_LIMIT && limitOption == LIMIT_OPTION_WITH_TIES &&
-		IsA(clause, A_Const) && castNode(A_Const, clause)->isnull)
+		IsA(clause, A_Const) && ((A_Const *) clause)->val.type == T_Null)
 		ereport(ERROR,
 				(errcode(ERRCODE_INVALID_ROW_COUNT_IN_LIMIT_CLAUSE),
 				 errmsg("row count cannot be null in FETCH FIRST ... WITH TIES clause")));
@@ -1986,19 +1965,20 @@ findTargetlistEntrySQL92(ParseState *pstate, Node *node, List **tlist,
 	}
 	if (IsA(node, A_Const))
 	{
-		A_Const    *aconst = castNode(A_Const, node);
+		Value	   *val = &((A_Const *) node)->val;
+		int			location = ((A_Const *) node)->location;
 		int			targetlist_pos = 0;
 		int			target_pos;
 
-		if (!IsA(&aconst->val, Integer))
+		if (!IsA(val, Integer))
 			ereport(ERROR,
 					(errcode(ERRCODE_SYNTAX_ERROR),
 			/* translator: %s is name of a SQL construct, eg ORDER BY */
 					 errmsg("non-integer constant in %s",
 							ParseExprKindName(exprKind)),
-					 parser_errposition(pstate, aconst->location)));
+					 parser_errposition(pstate, location)));
 
-		target_pos = intVal(&aconst->val);
+		target_pos = intVal(val);
 		foreach(tl, *tlist)
 		{
 			TargetEntry *tle = (TargetEntry *) lfirst(tl);
@@ -2018,7 +1998,7 @@ findTargetlistEntrySQL92(ParseState *pstate, Node *node, List **tlist,
 		/* translator: %s is name of a SQL construct, eg ORDER BY */
 				 errmsg("%s position %d is not in select list",
 						ParseExprKindName(exprKind), target_pos),
-				 parser_errposition(pstate, aconst->location)));
+				 parser_errposition(pstate, location)));
 	}
 
 	/*
@@ -2794,7 +2774,7 @@ transformWindowDefinitions(ParseState *pstate,
 						(errcode(ERRCODE_WINDOWING_ERROR),
 						 errmsg("RANGE with offset PRECEDING/FOLLOWING requires exactly one ORDER BY column"),
 						 parser_errposition(pstate, windef->location)));
-			sortcl = linitial_node(SortGroupClause, wc->orderClause);
+			sortcl = castNode(SortGroupClause, linitial(wc->orderClause));
 			sortkey = get_sortgroupclause_expr(sortcl, *targetlist);
 			/* Find the sort operator in pg_amop */
 			if (!get_ordering_op_properties(sortcl->sortop,
@@ -2828,7 +2808,6 @@ transformWindowDefinitions(ParseState *pstate,
 											 rangeopfamily, rangeopcintype,
 											 &wc->endInRangeFunc,
 											 windef->endOffset);
-		wc->runCondition = NIL;
 		wc->winref = winref;
 
 		result = lappend(result, wc);
@@ -3209,6 +3188,17 @@ transformOnConflictArbiter(ParseState *pstate,
 	/* ON CONFLICT DO NOTHING does not require an inference clause */
 	if (infer)
 	{
+		List	   *save_namespace;
+
+		/*
+		 * While we process the arbiter expressions, accept only non-qualified
+		 * references to the target table. Hide any other relations.
+		 */
+		save_namespace = pstate->p_namespace;
+		pstate->p_namespace = NIL;
+		addNSItemToQuery(pstate, pstate->p_target_nsitem,
+						 false, false, true);
+
 		if (infer->indexElems)
 			*arbiterExpr = resolve_unique_index_expr(pstate, infer,
 													 pstate->p_target_relation);
@@ -3220,6 +3210,8 @@ transformOnConflictArbiter(ParseState *pstate,
 		if (infer->whereClause)
 			*arbiterWhere = transformExpr(pstate, infer->whereClause,
 										  EXPR_KIND_INDEX_PREDICATE);
+
+		pstate->p_namespace = save_namespace;
 
 		/*
 		 * If the arbiter is specified by constraint name, get the constraint

@@ -3,7 +3,7 @@
  * toast_internals.c
  *	  Functions for internal use by the TOAST system.
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/access/common/toast_internals.c
@@ -44,56 +44,46 @@ static bool toastid_valueid_exists(Oid toastrelid, Oid valueid);
  * ----------
  */
 Datum
-toast_compress_datum(Datum value, char cmethod)
+toast_compress_datum(Datum value)
 {
-	struct varlena *tmp = NULL;
-	int32		valsize;
-	ToastCompressionId cmid = TOAST_INVALID_COMPRESSION_ID;
+	struct varlena *tmp;
+	int32		valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
+	int32		len;
 
 	Assert(!VARATT_IS_EXTERNAL(DatumGetPointer(value)));
 	Assert(!VARATT_IS_COMPRESSED(DatumGetPointer(value)));
 
-	valsize = VARSIZE_ANY_EXHDR(DatumGetPointer(value));
-
-	/* If the compression method is not valid, use the current default */
-	if (!CompressionMethodIsValid(cmethod))
-		cmethod = default_toast_compression;
-
 	/*
-	 * Call appropriate compression routine for the compression method.
+	 * No point in wasting a palloc cycle if value size is out of the allowed
+	 * range for compression
 	 */
-	switch (cmethod)
-	{
-		case TOAST_PGLZ_COMPRESSION:
-			tmp = pglz_compress_datum((const struct varlena *) value);
-			cmid = TOAST_PGLZ_COMPRESSION_ID;
-			break;
-		case TOAST_LZ4_COMPRESSION:
-			tmp = lz4_compress_datum((const struct varlena *) value);
-			cmid = TOAST_LZ4_COMPRESSION_ID;
-			break;
-		default:
-			elog(ERROR, "invalid compression method %c", cmethod);
-	}
-
-	if (tmp == NULL)
+	if (valsize < PGLZ_strategy_default->min_input_size ||
+		valsize > PGLZ_strategy_default->max_input_size)
 		return PointerGetDatum(NULL);
 
+	tmp = (struct varlena *) palloc(PGLZ_MAX_OUTPUT(valsize) +
+									TOAST_COMPRESS_HDRSZ);
+
 	/*
-	 * We recheck the actual size even if compression reports success, because
-	 * it might be satisfied with having saved as little as one byte in the
-	 * compressed data --- which could turn into a net loss once you consider
-	 * header and alignment padding.  Worst case, the compressed format might
-	 * require three padding bytes (plus header, which is included in
-	 * VARSIZE(tmp)), whereas the uncompressed format would take only one
-	 * header byte and no padding if the value is short enough.  So we insist
-	 * on a savings of more than 2 bytes to ensure we have a gain.
+	 * We recheck the actual size even if pglz_compress() reports success,
+	 * because it might be satisfied with having saved as little as one byte
+	 * in the compressed data --- which could turn into a net loss once you
+	 * consider header and alignment padding.  Worst case, the compressed
+	 * format might require three padding bytes (plus header, which is
+	 * included in VARSIZE(tmp)), whereas the uncompressed format would take
+	 * only one header byte and no padding if the value is short enough.  So
+	 * we insist on a savings of more than 2 bytes to ensure we have a gain.
 	 */
-	if (VARSIZE(tmp) < valsize - 2)
+	len = pglz_compress(VARDATA_ANY(DatumGetPointer(value)),
+						valsize,
+						TOAST_COMPRESS_RAWDATA(tmp),
+						PGLZ_strategy_default);
+	if (len >= 0 &&
+		len + TOAST_COMPRESS_HDRSZ < valsize - 2)
 	{
+		TOAST_COMPRESS_SET_RAWSIZE(tmp, valsize);
+		SET_VARSIZE_COMPRESSED(tmp, len + TOAST_COMPRESS_HDRSZ);
 		/* successful compression */
-		Assert(cmid != TOAST_INVALID_COMPRESSION_ID);
-		TOAST_COMPRESS_SET_SIZE_AND_COMPRESS_METHOD(tmp, valsize, cmid);
 		return PointerGetDatum(tmp);
 	}
 	else
@@ -162,32 +152,27 @@ toast_save_datum(Relation rel, Datum value,
 									&num_indexes);
 
 	/*
-	 * Get the data pointer and length, and compute va_rawsize and va_extinfo.
+	 * Get the data pointer and length, and compute va_rawsize and va_extsize.
 	 *
 	 * va_rawsize is the size of the equivalent fully uncompressed datum, so
 	 * we have to adjust for short headers.
 	 *
-	 * va_extinfo stored the actual size of the data payload in the toast
-	 * records and the compression method in first 2 bits if data is
-	 * compressed.
+	 * va_extsize is the actual size of the data payload in the toast records.
 	 */
 	if (VARATT_IS_SHORT(dval))
 	{
 		data_p = VARDATA_SHORT(dval);
 		data_todo = VARSIZE_SHORT(dval) - VARHDRSZ_SHORT;
 		toast_pointer.va_rawsize = data_todo + VARHDRSZ;	/* as if not short */
-		toast_pointer.va_extinfo = data_todo;
+		toast_pointer.va_extsize = data_todo;
 	}
 	else if (VARATT_IS_COMPRESSED(dval))
 	{
 		data_p = VARDATA(dval);
 		data_todo = VARSIZE(dval) - VARHDRSZ;
 		/* rawsize in a compressed datum is just the size of the payload */
-		toast_pointer.va_rawsize = VARDATA_COMPRESSED_GET_EXTSIZE(dval) + VARHDRSZ;
-
-		/* set external size and compression method */
-		VARATT_EXTERNAL_SET_SIZE_AND_COMPRESS_METHOD(toast_pointer, data_todo,
-													 VARDATA_COMPRESSED_GET_COMPRESS_METHOD(dval));
+		toast_pointer.va_rawsize = VARRAWSIZE_4B_C(dval) + VARHDRSZ;
+		toast_pointer.va_extsize = data_todo;
 		/* Assert that the numbers look like it's compressed */
 		Assert(VARATT_EXTERNAL_IS_COMPRESSED(toast_pointer));
 	}
@@ -196,7 +181,7 @@ toast_save_datum(Relation rel, Datum value,
 		data_p = VARDATA(dval);
 		data_todo = VARSIZE(dval) - VARHDRSZ;
 		toast_pointer.va_rawsize = VARSIZE(dval);
-		toast_pointer.va_extinfo = data_todo;
+		toast_pointer.va_extsize = data_todo;
 	}
 
 	/*
@@ -343,7 +328,7 @@ toast_save_datum(Relation rel, Datum value,
 							 toastrel,
 							 toastidxs[i]->rd_index->indisunique ?
 							 UNIQUE_CHECK_YES : UNIQUE_CHECK_NO,
-							 false, NULL);
+							 NULL);
 		}
 
 		/*
@@ -659,15 +644,6 @@ init_toast_snapshot(Snapshot toast_snapshot)
 	 */
 	if (snapshot == NULL)
 		elog(ERROR, "cannot fetch toast data without an active snapshot");
-
-	/*
-	 * Catalog snapshots can be returned by GetOldestSnapshot() even if not
-	 * registered or active. That easily hides bugs around not having a
-	 * snapshot set up - most of the time there is a valid catalog snapshot.
-	 * So additionally insist that the current snapshot is registered or
-	 * active.
-	 */
-	Assert(HaveRegisteredOrActiveSnapshot());
 
 	InitToastSnapshot(*toast_snapshot, snapshot->lsn, snapshot->whenTaken);
 }

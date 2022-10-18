@@ -3,7 +3,7 @@
  * schemacmds.c
  *	  schema creation/manipulation commands
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -183,7 +183,7 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	/*
 	 * Execute each command contained in the CREATE SCHEMA.  Since the grammar
 	 * allows only utility commands in CREATE SCHEMA, there is no need to pass
-	 * them through parse_analyze_*() or the rewriter; we can just hand them
+	 * them through parse_analyze() or the rewriter; we can just hand them
 	 * straight to ProcessUtility.
 	 */
 	foreach(parsetree_item, parsetree_list)
@@ -202,7 +202,6 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 		/* do this step */
 		ProcessUtility(wrapper,
 					   queryString,
-					   false,
 					   PROCESS_UTILITY_SUBCOMMAND,
 					   NULL,
 					   NULL,
@@ -220,6 +219,29 @@ CreateSchemaCommand(CreateSchemaStmt *stmt, const char *queryString,
 	SetUserIdAndSecContext(saved_uid, save_sec_context);
 
 	return namespaceId;
+}
+
+/*
+ * Guts of schema deletion.
+ */
+void
+RemoveSchemaById(Oid schemaOid)
+{
+	Relation	relation;
+	HeapTuple	tup;
+
+	relation = table_open(NamespaceRelationId, RowExclusiveLock);
+
+	tup = SearchSysCache1(NAMESPACEOID,
+						  ObjectIdGetDatum(schemaOid));
+	if (!HeapTupleIsValid(tup)) /* should not happen */
+		elog(ERROR, "cache lookup failed for namespace %u", schemaOid);
+
+	CatalogTupleDelete(relation, &tup->t_self);
+
+	ReleaseSysCache(tup);
+
+	table_close(relation, RowExclusiveLock);
 }
 
 

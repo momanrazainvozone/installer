@@ -121,10 +121,7 @@ drop_descriptor(char *name, char *connection)
 			}
 		}
 	}
-	if (connection)
-		mmerror(PARSE_ERROR, ET_WARNING, "descriptor %s bound to connection %s does not exist", name, connection);
-	else
-		mmerror(PARSE_ERROR, ET_WARNING, "descriptor %s bound to the default connection does not exist", name);
+	mmerror(PARSE_ERROR, ET_WARNING, "descriptor \"%s\" does not exist", name);
 }
 
 struct descriptor
@@ -144,18 +141,9 @@ lookup_descriptor(char *name, char *connection)
 				|| (connection && i->connection
 					&& strcmp(connection, i->connection) == 0))
 				return i;
-			if (connection && !i->connection)
-			{
-				/* overwrite descriptor's connection */
-				i->connection = mm_strdup(connection);
-				return i;
-			}
 		}
 	}
-	if (connection)
-		mmerror(PARSE_ERROR, ET_WARNING, "descriptor %s bound to connection %s does not exist", name, connection);
-	else
-		mmerror(PARSE_ERROR, ET_WARNING, "descriptor %s bound to the default connection does not exist", name);
+	mmerror(PARSE_ERROR, ET_WARNING, "descriptor \"%s\" does not exist", name);
 	return NULL;
 }
 

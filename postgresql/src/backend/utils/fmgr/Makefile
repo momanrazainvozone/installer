@@ -17,4 +17,6 @@ OBJS = \
 	fmgr.o \
 	funcapi.o
 
+override CPPFLAGS += -DDLSUFFIX=\"$(DLSUFFIX)\"
+
 include $(top_srcdir)/src/backend/common.mk

@@ -1,6 +1,6 @@
 #! /usr/bin/perl
 #
-# Copyright (c) 2007-2022, PostgreSQL Global Development Group
+# Copyright (c) 2007-2020, PostgreSQL Global Development Group
 #
 # src/backend/utils/mb/Unicode/UCS_to_EUC_JIS_2004.pl
 #
@@ -24,13 +24,12 @@ my @all;
 
 while (my $line = <$in>)
 {
-	if ($line =~ /^0x(\w+)\s*U\+(\w+)\+(\w+)\s*#\s*(\S.*)?\s*$/)
+	if ($line =~ /^0x(.*)[ \t]*U\+(.*)\+(.*)[ \t]*#(.*)$/)
 	{
 
 		# combined characters
 		my ($c, $u1, $u2) = ($1, $2, $3);
-		# The "\t \t" below is just to avoid insubstantial diffs.
-		my $rest = "U+" . $u1 . "+" . $u2 . "\t \t" . $4;
+		my $rest = "U+" . $u1 . "+" . $u2 . $4;
 		my $code = hex($c);
 		my $ucs1 = hex($u1);
 		my $ucs2 = hex($u2);
@@ -46,7 +45,7 @@ while (my $line = <$in>)
 			l          => $.
 		  };
 	}
-	elsif ($line =~ /^0x(\w+)\s*U\+(\w+)\s*#\s*(\S.*)?\s*$/)
+	elsif ($line =~ /^0x(.*)[ \t]*U\+(.*)[ \t]*#(.*)$/)
 	{
 
 		# non-combined characters

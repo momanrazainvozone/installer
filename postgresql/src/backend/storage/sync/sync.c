@@ -3,7 +3,7 @@
  * sync.c
  *	  File synchronization management code.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -18,9 +18,6 @@
 #include <fcntl.h>
 #include <sys/file.h>
 
-#include "access/commit_ts.h"
-#include "access/clog.h"
-#include "access/multixact.h"
 #include "access/xlog.h"
 #include "access/xlogutils.h"
 #include "commands/tablespace.h"
@@ -29,7 +26,6 @@
 #include "portability/instr_time.h"
 #include "postmaster/bgwriter.h"
 #include "storage/bufmgr.h"
-#include "storage/fd.h"
 #include "storage/ipc.h"
 #include "storage/latch.h"
 #include "storage/md.h"
@@ -96,31 +92,12 @@ typedef struct SyncOps
 										const FileTag *candidate);
 } SyncOps;
 
-/*
- * These indexes must correspond to the values of the SyncRequestHandler enum.
- */
 static const SyncOps syncsw[] = {
 	/* magnetic disk */
-	[SYNC_HANDLER_MD] = {
+	{
 		.sync_syncfiletag = mdsyncfiletag,
 		.sync_unlinkfiletag = mdunlinkfiletag,
 		.sync_filetagmatches = mdfiletagmatches
-	},
-	/* pg_xact */
-	[SYNC_HANDLER_CLOG] = {
-		.sync_syncfiletag = clogsyncfiletag
-	},
-	/* pg_commit_ts */
-	[SYNC_HANDLER_COMMIT_TS] = {
-		.sync_syncfiletag = committssyncfiletag
-	},
-	/* pg_multixact/offsets */
-	[SYNC_HANDLER_MULTIXACT_OFFSET] = {
-		.sync_syncfiletag = multixactoffsetssyncfiletag
-	},
-	/* pg_multixact/members */
-	[SYNC_HANDLER_MULTIXACT_MEMBER] = {
-		.sync_syncfiletag = multixactmemberssyncfiletag
 	}
 };
 
@@ -132,10 +109,10 @@ InitSync(void)
 {
 	/*
 	 * Create pending-operations hashtable if we need it.  Currently, we need
-	 * it if we are standalone (not under a postmaster) or if we are a
-	 * checkpointer auxiliary process.
+	 * it if we are standalone (not under a postmaster) or if we are a startup
+	 * or checkpointer auxiliary process.
 	 */
-	if (!IsUnderPostmaster || AmCheckpointerProcess())
+	if (!IsUnderPostmaster || AmStartupProcess() || AmCheckpointerProcess())
 	{
 		HASHCTL		hash_ctl;
 
@@ -153,6 +130,7 @@ InitSync(void)
 											  ALLOCSET_DEFAULT_SIZES);
 		MemoryContextAllowInCriticalSection(pendingOpsCxt, true);
 
+		MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = sizeof(FileTag);
 		hash_ctl.entrysize = sizeof(PendingFsyncEntry);
 		hash_ctl.hcxt = pendingOpsCxt;
@@ -162,6 +140,7 @@ InitSync(void)
 								 HASH_ELEM | HASH_BLOBS | HASH_CONTEXT);
 		pendingUnlinks = NIL;
 	}
+
 }
 
 /*
@@ -287,6 +266,7 @@ SyncPostCheckpoint(void)
 }
 
 /*
+
  *	ProcessSyncRequests() -- Process queued fsync requests.
  */
 void
@@ -455,8 +435,8 @@ ProcessSyncRequests(void)
 				else
 					ereport(DEBUG1,
 							(errcode_for_file_access(),
-							 errmsg_internal("could not fsync file \"%s\" but retrying: %m",
-											 path)));
+							 errmsg("could not fsync file \"%s\" but retrying: %m",
+									path)));
 
 				/*
 				 * Absorb incoming requests and check to see if a cancel
@@ -560,8 +540,8 @@ RememberSyncRequest(const FileTag *ftag, SyncRequestType type)
 												  (void *) ftag,
 												  HASH_ENTER,
 												  &found);
-		/* if new entry, or was previously canceled, initialize it */
-		if (!found || entry->canceled)
+		/* if new entry, initialize it */
+		if (!found)
 		{
 			entry->cycle_ctr = sync_cycle_ctr;
 			entry->canceled = false;
@@ -623,4 +603,28 @@ RegisterSyncRequest(const FileTag *ftag, SyncRequestType type,
 	}
 
 	return ret;
+}
+
+/*
+ * In archive recovery, we rely on checkpointer to do fsyncs, but we will have
+ * already created the pendingOps during initialization of the startup
+ * process.  Calling this function drops the local pendingOps so that
+ * subsequent requests will be forwarded to checkpointer.
+ */
+void
+EnableSyncRequestForwarding(void)
+{
+	/* Perform any pending fsyncs we may have queued up, then drop table */
+	if (pendingOps)
+	{
+		ProcessSyncRequests();
+		hash_destroy(pendingOps);
+	}
+	pendingOps = NULL;
+
+	/*
+	 * We should not have any pending unlink requests, since mdunlink doesn't
+	 * queue unlink requests when isRedo.
+	 */
+	Assert(pendingUnlinks == NIL);
 }

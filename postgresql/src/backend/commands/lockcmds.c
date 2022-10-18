@@ -3,7 +3,7 @@
  * lockcmds.c
  *	  LOCK command support code
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -89,9 +89,8 @@ RangeVarCallbackForLockTable(const RangeVar *rv, Oid relid, Oid oldrelid,
 		relkind != RELKIND_VIEW)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("cannot lock relation \"%s\"",
-						rv->relname),
-				 errdetail_relkind_not_supported(relkind)));
+				 errmsg("\"%s\" is not a table or view",
+						rv->relname)));
 
 	/*
 	 * Make note if a temporary relation has been accessed in this
@@ -169,7 +168,7 @@ typedef struct
 {
 	LOCKMODE	lockmode;		/* lock mode to use */
 	bool		nowait;			/* no wait mode */
-	Oid			check_as_user;	/* user for checking the privilege */
+	Oid			viewowner;		/* view owner for checking the privilege */
 	Oid			viewoid;		/* OID of the view to be locked */
 	List	   *ancestor_views; /* OIDs of ancestor views */
 } LockViewRecurse_context;
@@ -215,12 +214,8 @@ LockViewRecurse_walker(Node *node, LockViewRecurse_context *context)
 			if (list_member_oid(context->ancestor_views, relid))
 				continue;
 
-			/*
-			 * Check permissions as the specified user.  This will either be
-			 * the view owner or the current user.
-			 */
-			aclresult = LockTableAclCheck(relid, context->lockmode,
-										  context->check_as_user);
+			/* Check permissions with the view owner's privilege. */
+			aclresult = LockTableAclCheck(relid, context->lockmode, context->viewowner);
 			if (aclresult != ACLCHECK_OK)
 				aclcheck_error(aclresult, get_relkind_objtype(relkind), relname);
 
@@ -263,22 +258,15 @@ LockViewRecurse(Oid reloid, LOCKMODE lockmode, bool nowait,
 	view = table_open(reloid, NoLock);
 	viewquery = get_view_query(view);
 
-	/*
-	 * If the view has the security_invoker property set, check permissions as
-	 * the current user.  Otherwise, check permissions as the view owner.
-	 */
 	context.lockmode = lockmode;
 	context.nowait = nowait;
-	if (RelationHasSecurityInvoker(view))
-		context.check_as_user = GetUserId();
-	else
-		context.check_as_user = view->rd_rel->relowner;
+	context.viewowner = view->rd_rel->relowner;
 	context.viewoid = reloid;
 	context.ancestor_views = lappend_oid(ancestor_views, reloid);
 
 	LockViewRecurse_walker((Node *) viewquery, &context);
 
-	context.ancestor_views = list_delete_last(context.ancestor_views);
+	(void) list_delete_last(context.ancestor_views);
 
 	table_close(view, NoLock);
 }

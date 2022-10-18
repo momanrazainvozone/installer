@@ -25,7 +25,7 @@ PostgreSQL documentation
    <arg rep="repeat"><replaceable>option</replaceable></arg>
    <group choice="plain">
     <group choice="req">
-     <arg choice="plain"><option>-D</option></arg>
+     <arg choice="plain"><option>-D </option></arg>
      <arg choice="plain"><option>--target-pgdata</option></arg>
     </group>
     <replaceable> directory</replaceable>
@@ -43,8 +43,8 @@ PostgreSQL documentation
   <para>
    <application>pg_rewind</application> is a tool for synchronizing a PostgreSQL cluster
    with another copy of the same cluster, after the clusters' timelines have
-   diverged. A typical scenario is to bring an old primary server back online
-   after failover as a standby that follows the new primary.
+   diverged. A typical scenario is to bring an old master server back online
+   after failover as a standby that follows the new master.
   </para>
 
   <para>
@@ -173,7 +173,7 @@ PostgreSQL documentation
         with a role having sufficient permissions to execute the functions
         used by <application>pg_rewind</application> on the source server
         (see Notes section for details) or a superuser role.  This option
-        requires the source server to be running and accepting connections.
+        requires the source server to be running and not in recovery mode.
        </para>
       </listitem>
      </varlistentry>
@@ -237,21 +237,6 @@ PostgreSQL documentation
         configuration to retrieve WAL files from the WAL archive if these
         files are no longer available in the <filename>pg_wal</filename>
         directory.
-       </para>
-      </listitem>
-     </varlistentry>
-
-     <varlistentry>
-      <term><option>--config-file=<replaceable class="parameter">filename</replaceable></option></term>
-      <listitem>
-       <para>
-        Use the specified main server configuration file for the target
-        cluster. This affects <application>pg_rewind</application> when
-        it uses internally the <application>postgres</application> command
-        for the rewind operation on this cluster (when retrieving
-        <varname>restore_command</varname> with the option
-        <option>-c/--restore-target-wal</option> and when forcing a
-        completion of crash recovery).
        </para>
       </listitem>
      </varlistentry>

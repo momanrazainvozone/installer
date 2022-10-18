@@ -2,7 +2,7 @@
  *
  * pg_isready --- checks the status of the PostgreSQL server
  *
- * Copyright (c) 2013-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2013-2020, PostgreSQL Global Development Group
  *
  * src/bin/scripts/pg_isready.c
  *
@@ -12,7 +12,6 @@
 #include "postgres_fe.h"
 #include "common.h"
 #include "common/logging.h"
-#include "fe_utils/option_utils.h"
 
 #define DEFAULT_CONNECT_TIMEOUT "3"
 
@@ -93,8 +92,7 @@ main(int argc, char **argv)
 				pguser = pg_strdup(optarg);
 				break;
 			default:
-				/* getopt_long already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 
 				/*
 				 * We need to make sure we don't return 1 here because someone
@@ -108,7 +106,7 @@ main(int argc, char **argv)
 	{
 		pg_log_error("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"), progname);
 
 		/*
 		 * We need to make sure we don't return 1 here because someone

@@ -6,7 +6,7 @@
  *	  message integrity and endpoint authentication.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -42,7 +42,6 @@ char	   *ssl_cert_file;
 char	   *ssl_key_file;
 char	   *ssl_ca_file;
 char	   *ssl_crl_file;
-char	   *ssl_crl_dir;
 char	   *ssl_dh_params_file;
 char	   *ssl_passphrase_command;
 bool		ssl_passphrase_command_supports_reload;
@@ -120,9 +119,8 @@ secure_open_server(Port *port)
 	r = be_tls_open_server(port);
 
 	ereport(DEBUG2,
-			(errmsg_internal("SSL connection from DN:\"%s\" CN:\"%s\"",
-							 port->peer_dn ? port->peer_dn : "(anonymous)",
-							 port->peer_cn ? port->peer_cn : "(anonymous)")));
+			(errmsg("SSL connection from \"%s\"",
+					port->peer_cn ? port->peer_cn : "(anonymous)")));
 #endif
 
 	return r;
@@ -181,7 +179,7 @@ retry:
 
 		Assert(waitfor);
 
-		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, waitfor, NULL);
+		ModifyWaitEvent(FeBeWaitSet, 0, waitfor, NULL);
 
 		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_READ);
@@ -293,7 +291,7 @@ retry:
 
 		Assert(waitfor);
 
-		ModifyWaitEvent(FeBeWaitSet, FeBeWaitSetSocketPos, waitfor, NULL);
+		ModifyWaitEvent(FeBeWaitSet, 0, waitfor, NULL);
 
 		WaitEventSetWait(FeBeWaitSet, -1 /* no timeout */ , &event, 1,
 						 WAIT_EVENT_CLIENT_WRITE);

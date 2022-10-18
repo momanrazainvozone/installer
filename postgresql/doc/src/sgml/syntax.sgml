@@ -836,7 +836,7 @@ CAST ( '<replaceable>string</replaceable>' AS <replaceable>type</replaceable> )
    <para>
     When working with non-SQL-standard operator names, you will usually
     need to separate adjacent operators with spaces to avoid ambiguity.
-    For example, if you have defined a prefix operator named <literal>@</literal>,
+    For example, if you have defined a left unary operator named <literal>@</literal>,
     you cannot write <literal>X*@Y</literal>; you must write
     <literal>X* @Y</literal> to ensure that
     <productname>PostgreSQL</productname> reads it as two operator names
@@ -1062,7 +1062,7 @@ CAST ( '<replaceable>string</replaceable>' AS <replaceable>type</replaceable> )
        <entry><token>IS</token> <token>ISNULL</token> <token>NOTNULL</token></entry>
        <entry></entry>
        <entry><literal>IS TRUE</literal>, <literal>IS FALSE</literal>, <literal>IS
-       NULL</literal>, <literal>IS DISTINCT FROM</literal>, etc.</entry>
+       NULL</literal>, <literal>IS DISTINCT FROM</literal>, etc</entry>
       </row>
 
       <row>
@@ -1121,7 +1121,11 @@ SELECT 3 OPERATOR(pg_catalog.+) 4;
      cases, these changes will result in no behavioral change, or perhaps
      in <quote>no such operator</quote> failures which can be resolved by adding
      parentheses.  However there are corner cases in which a query might
-     change behavior without any parsing error being reported.
+     change behavior without any parsing error being reported.  If you are
+     concerned about whether these changes have silently broken something,
+     you can test your application with the configuration
+     parameter <xref linkend="guc-operator-precedence-warning"/> turned on
+     to see if any warnings are logged.
     </para>
    </note>
   </sect2>
@@ -1440,10 +1444,11 @@ $1.somecolumn
    </indexterm>
 
    <para>
-    There are two possible syntaxes for an operator invocation:
+    There are three possible syntaxes for an operator invocation:
     <simplelist>
      <member><replaceable>expression</replaceable> <replaceable>operator</replaceable> <replaceable>expression</replaceable> (binary infix operator)</member>
      <member><replaceable>operator</replaceable> <replaceable>expression</replaceable> (unary prefix operator)</member>
+     <member><replaceable>expression</replaceable> <replaceable>operator</replaceable> (unary postfix operator)</member>
     </simplelist>
     where the <replaceable>operator</replaceable> token follows the syntax
     rules of <xref linkend="sql-syntax-operators"/>, or is one of the
@@ -2625,7 +2630,7 @@ LANGUAGE SQL IMMUTABLE STRICT;
      to functions in <productname>PostgreSQL</productname>.  An example is:
 <screen>
 SELECT concat_lower_or_upper('Hello', 'World', true);
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  HELLO WORLD
 (1 row)
@@ -2635,7 +2640,7 @@ SELECT concat_lower_or_upper('Hello', 'World', true);
      Another example is:
 <screen>
 SELECT concat_lower_or_upper('Hello', 'World');
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  hello world
 (1 row)
@@ -2661,7 +2666,7 @@ SELECT concat_lower_or_upper('Hello', 'World');
      For example:
 <screen>
 SELECT concat_lower_or_upper(a =&gt; 'Hello', b =&gt; 'World');
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  hello world
 (1 row)
@@ -2672,13 +2677,13 @@ SELECT concat_lower_or_upper(a =&gt; 'Hello', b =&gt; 'World');
      order, for example:
 <screen>
 SELECT concat_lower_or_upper(a =&gt; 'Hello', b =&gt; 'World', uppercase =&gt; true);
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  HELLO WORLD
 (1 row)
 
 SELECT concat_lower_or_upper(a =&gt; 'Hello', uppercase =&gt; true, b =&gt; 'World');
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  HELLO WORLD
 (1 row)
@@ -2689,7 +2694,7 @@ SELECT concat_lower_or_upper(a =&gt; 'Hello', uppercase =&gt; true, b =&gt; 'Wor
       An older syntax based on ":=" is supported for backward compatibility:
 <screen>
 SELECT concat_lower_or_upper(a := 'Hello', uppercase := true, b := 'World');
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  HELLO WORLD
 (1 row)
@@ -2711,7 +2716,7 @@ SELECT concat_lower_or_upper(a := 'Hello', uppercase := true, b := 'World');
     For example:
 <screen>
 SELECT concat_lower_or_upper('Hello', 'World', uppercase =&gt; true);
- concat_lower_or_upper
+ concat_lower_or_upper 
 -----------------------
  HELLO WORLD
 (1 row)

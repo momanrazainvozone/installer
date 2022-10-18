@@ -89,7 +89,6 @@ gin_extract_query_trgm(PG_FUNCTION_ARGS)
 		case SimilarityStrategyNumber:
 		case WordSimilarityStrategyNumber:
 		case StrictWordSimilarityStrategyNumber:
-		case EqualStrategyNumber:
 			trg = generate_trgm(VARDATA_ANY(val), VARSIZE_ANY_EXHDR(val));
 			break;
 		case ILikeStrategyNumber:
@@ -222,7 +221,6 @@ gin_trgm_consistent(PG_FUNCTION_ARGS)
 #endif
 			/* FALL THRU */
 		case LikeStrategyNumber:
-		case EqualStrategyNumber:
 			/* Check if all extracted trigrams are presented. */
 			res = true;
 			for (i = 0; i < nkeys; i++)
@@ -308,7 +306,6 @@ gin_trgm_triconsistent(PG_FUNCTION_ARGS)
 #endif
 			/* FALL THRU */
 		case LikeStrategyNumber:
-		case EqualStrategyNumber:
 			/* Check if all extracted trigrams are presented. */
 			res = GIN_MAYBE;
 			for (i = 0; i < nkeys; i++)

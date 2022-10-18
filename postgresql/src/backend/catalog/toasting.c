@@ -4,7 +4,7 @@
  *	  This file contains routines to support creation of toast tables
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -15,7 +15,6 @@
 #include "postgres.h"
 
 #include "access/heapam.h"
-#include "access/toast_compression.h"
 #include "access/xact.h"
 #include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
@@ -34,6 +33,9 @@
 #include "utils/builtins.h"
 #include "utils/rel.h"
 #include "utils/syscache.h"
+
+/* Potentially set by pg_upgrade_support functions */
+Oid			binary_upgrade_next_toast_pg_type_oid = InvalidOid;
 
 static void CheckAndCreateToastTable(Oid relOid, Datum reloptions,
 									 LOCKMODE lockmode, bool check,
@@ -105,8 +107,10 @@ BootstrapToastTable(char *relName, Oid toastOid, Oid toastIndexOid)
 
 	if (rel->rd_rel->relkind != RELKIND_RELATION &&
 		rel->rd_rel->relkind != RELKIND_MATVIEW)
-		elog(ERROR, "\"%s\" is not a table or materialized view",
-			 relName);
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("\"%s\" is not a table or materialized view",
+						relName)));
 
 	/* create_toast_table does all the work */
 	if (!create_toast_table(rel, toastOid, toastIndexOid, (Datum) 0,
@@ -138,6 +142,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	Relation	toast_rel;
 	Relation	class_rel;
 	Oid			toast_relid;
+	Oid			toast_typid = InvalidOid;
 	Oid			namespaceid;
 	char		toast_relname[NAMEDATALEN];
 	char		toast_idxname[NAMEDATALEN];
@@ -183,7 +188,8 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 		 * problem that it might take up an OID that will conflict with some
 		 * old-cluster table we haven't seen yet.
 		 */
-		if (!OidIsValid(binary_upgrade_next_toast_pg_class_oid))
+		if (!OidIsValid(binary_upgrade_next_toast_pg_class_oid) ||
+			!OidIsValid(binary_upgrade_next_toast_pg_type_oid))
 			return false;
 	}
 
@@ -226,11 +232,6 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	TupleDescAttr(tupdesc, 1)->attstorage = TYPSTORAGE_PLAIN;
 	TupleDescAttr(tupdesc, 2)->attstorage = TYPSTORAGE_PLAIN;
 
-	/* Toast field should not be compressed */
-	TupleDescAttr(tupdesc, 0)->attcompression = InvalidCompressionMethod;
-	TupleDescAttr(tupdesc, 1)->attcompression = InvalidCompressionMethod;
-	TupleDescAttr(tupdesc, 2)->attcompression = InvalidCompressionMethod;
-
 	/*
 	 * Toast tables for regular relations go in pg_toast; those for temp
 	 * relations go into the per-backend temp-toast-table namespace.
@@ -239,6 +240,17 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 		namespaceid = GetTempToastNamespace();
 	else
 		namespaceid = PG_TOAST_NAMESPACE;
+
+	/*
+	 * Use binary-upgrade override for pg_type.oid, if supplied.  We might be
+	 * in the post-schema-restore phase where we are doing ALTER TABLE to
+	 * create TOAST tables that didn't exist in the old cluster.
+	 */
+	if (IsBinaryUpgrade && OidIsValid(binary_upgrade_next_toast_pg_type_oid))
+	{
+		toast_typid = binary_upgrade_next_toast_pg_type_oid;
+		binary_upgrade_next_toast_pg_type_oid = InvalidOid;
+	}
 
 	/* Toast table is shared if and only if its parent is. */
 	shared_relation = rel->rd_rel->relisshared;
@@ -250,7 +262,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 										   namespaceid,
 										   rel->rd_rel->reltablespace,
 										   toastOid,
-										   InvalidOid,
+										   toast_typid,
 										   InvalidOid,
 										   rel->rd_rel->relowner,
 										   table_relation_toast_am(rel),
@@ -301,10 +313,7 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	indexInfo->ii_ExclusionStrats = NULL;
 	indexInfo->ii_OpclassOptions = NULL;
 	indexInfo->ii_Unique = true;
-	indexInfo->ii_NullsNotDistinct = false;
 	indexInfo->ii_ReadyForInserts = true;
-	indexInfo->ii_CheckedUnchanged = false;
-	indexInfo->ii_IndexUnchanged = false;
 	indexInfo->ii_Concurrent = false;
 	indexInfo->ii_BrokenHotChain = false;
 	indexInfo->ii_ParallelWorkers = 0;
@@ -359,8 +368,9 @@ create_toast_table(Relation rel, Oid toastOid, Oid toastIndexOid,
 	table_close(class_rel, RowExclusiveLock);
 
 	/*
-	 * Register dependency from the toast table to the main, so that the toast
-	 * table will be deleted if the main is.  Skip this in bootstrap mode.
+	 * Register dependency from the toast table to the master, so that the
+	 * toast table will be deleted if the master is.  Skip this in bootstrap
+	 * mode.
 	 */
 	if (!IsBootstrapProcessingMode())
 	{
@@ -403,9 +413,9 @@ needs_toast_table(Relation rel)
 
 	/*
 	 * Ignore attempts to create toast tables on catalog tables after initdb.
-	 * Which catalogs get toast tables is explicitly chosen in catalog/pg_*.h.
-	 * (We could get here via some ALTER TABLE command if the catalog doesn't
-	 * have a toast table.)
+	 * Which catalogs get toast tables is explicitly chosen in
+	 * catalog/toasting.h.  (We could get here via some ALTER TABLE command if
+	 * the catalog doesn't have a toast table.)
 	 */
 	if (IsCatalogRelation(rel) && !IsBootstrapProcessingMode())
 		return false;

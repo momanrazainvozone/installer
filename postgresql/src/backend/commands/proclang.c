@@ -3,7 +3,7 @@
  * proclang.c
  *	  PostgreSQL LANGUAGE support code.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -57,7 +57,6 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	bool		is_update;
 	ObjectAddress myself,
 				referenced;
-	ObjectAddresses *addrs;
 
 	/*
 	 * Check permission
@@ -187,28 +186,29 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	/* dependency on extension */
 	recordDependencyOnCurrentExtension(&myself, is_update);
 
-	addrs = new_object_addresses();
-
 	/* dependency on the PL handler function */
-	ObjectAddressSet(referenced, ProcedureRelationId, handlerOid);
-	add_exact_object_address(&referenced, addrs);
+	referenced.classId = ProcedureRelationId;
+	referenced.objectId = handlerOid;
+	referenced.objectSubId = 0;
+	recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 
 	/* dependency on the inline handler function, if any */
 	if (OidIsValid(inlineOid))
 	{
-		ObjectAddressSet(referenced, ProcedureRelationId, inlineOid);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = inlineOid;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
 
 	/* dependency on the validator function, if any */
 	if (OidIsValid(valOid))
 	{
-		ObjectAddressSet(referenced, ProcedureRelationId, valOid);
-		add_exact_object_address(&referenced, addrs);
+		referenced.classId = ProcedureRelationId;
+		referenced.objectId = valOid;
+		referenced.objectSubId = 0;
+		recordDependencyOn(&myself, &referenced, DEPENDENCY_NORMAL);
 	}
-
-	record_object_address_dependencies(&myself, addrs, DEPENDENCY_NORMAL);
-	free_object_addresses(addrs);
 
 	/* Post creation hook for new procedural language */
 	InvokeObjectPostCreateHook(LanguageRelationId, myself.objectId, 0);
@@ -216,6 +216,28 @@ CreateProceduralLanguage(CreatePLangStmt *stmt)
 	table_close(rel, RowExclusiveLock);
 
 	return myself;
+}
+
+/*
+ * Guts of language dropping.
+ */
+void
+DropProceduralLanguageById(Oid langOid)
+{
+	Relation	rel;
+	HeapTuple	langTup;
+
+	rel = table_open(LanguageRelationId, RowExclusiveLock);
+
+	langTup = SearchSysCache1(LANGOID, ObjectIdGetDatum(langOid));
+	if (!HeapTupleIsValid(langTup)) /* should not happen */
+		elog(ERROR, "cache lookup failed for language %u", langOid);
+
+	CatalogTupleDelete(rel, &langTup->t_self);
+
+	ReleaseSysCache(langTup);
+
+	table_close(rel, RowExclusiveLock);
 }
 
 /*

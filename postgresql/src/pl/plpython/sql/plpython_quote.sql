@@ -9,7 +9,7 @@ CREATE FUNCTION quote(t text, how text) RETURNS text AS $$
         return plpy.quote_ident(t)
     else:
         raise plpy.Error("unrecognized quote type %s" % how)
-$$ LANGUAGE plpython3u;
+$$ LANGUAGE plpythonu;
 
 SELECT quote(t, 'literal') FROM (VALUES
        ('abc'),

@@ -2,7 +2,7 @@
  * bgworker.c
  *		POSTGRES pluggable background workers implementation
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/postmaster/bgworker.c
@@ -252,10 +252,10 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 	 */
 	if (max_worker_processes != BackgroundWorkerData->total_slots)
 	{
-		ereport(LOG,
-				(errmsg("inconsistent background worker state (max_worker_processes=%d, total_slots=%d)",
-						max_worker_processes,
-						BackgroundWorkerData->total_slots)));
+		elog(LOG,
+			 "inconsistent background worker state (max_worker_processes=%d, total_slots=%d",
+			 max_worker_processes,
+			 BackgroundWorkerData->total_slots);
 		return;
 	}
 
@@ -389,7 +389,7 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 		rw->rw_worker.bgw_notify_pid = slot->worker.bgw_notify_pid;
 		if (!PostmasterMarkPIDForWorkerNotify(rw->rw_worker.bgw_notify_pid))
 		{
-			elog(DEBUG1, "worker notification PID %ld is not valid",
+			elog(DEBUG1, "worker notification PID %lu is not valid",
 				 (long) rw->rw_worker.bgw_notify_pid);
 			rw->rw_worker.bgw_notify_pid = 0;
 		}
@@ -404,8 +404,8 @@ BackgroundWorkerStateChange(bool allow_new_workers)
 
 		/* Log it! */
 		ereport(DEBUG1,
-				(errmsg_internal("registering background worker \"%s\"",
-								 rw->rw_worker.bgw_name)));
+				(errmsg("registering background worker \"%s\"",
+						rw->rw_worker.bgw_name)));
 
 		slist_push_head(&BackgroundWorkerList, &rw->rw_lnode);
 	}
@@ -445,8 +445,8 @@ ForgetBackgroundWorker(slist_mutable_iter *cur)
 	slot->in_use = false;
 
 	ereport(DEBUG1,
-			(errmsg_internal("unregistering background worker \"%s\"",
-							 rw->rw_worker.bgw_name)));
+			(errmsg("unregistering background worker \"%s\"",
+					rw->rw_worker.bgw_name)));
 
 	slist_delete_current(cur);
 	free(rw);
@@ -531,7 +531,7 @@ BackgroundWorkerStopNotifications(pid_t pid)
  * This is called during a normal ("smart" or "fast") database shutdown.
  * After this point, no new background workers will be started, so anything
  * that might be waiting for them needs to be kicked off its wait.  We do
- * that by canceling the bgworker registration entirely, which is perhaps
+ * that by cancelling the bgworker registration entirely, which is perhaps
  * overkill, but since we're shutting down it does not matter whether the
  * registration record sticks around.
  *
@@ -652,24 +652,17 @@ static bool
 SanityCheckBackgroundWorker(BackgroundWorker *worker, int elevel)
 {
 	/* sanity check for flags */
-
-	/*
-	 * We used to support workers not connected to shared memory, but don't
-	 * anymore. Thus this is a required flag now. We're not removing the flag
-	 * for compatibility reasons and because the flag still provides some
-	 * signal when reading code.
-	 */
-	if (!(worker->bgw_flags & BGWORKER_SHMEM_ACCESS))
-	{
-		ereport(elevel,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("background worker \"%s\": background workers without shared memory access are not supported",
-						worker->bgw_name)));
-		return false;
-	}
-
 	if (worker->bgw_flags & BGWORKER_BACKEND_DATABASE_CONNECTION)
 	{
+		if (!(worker->bgw_flags & BGWORKER_SHMEM_ACCESS))
+		{
+			ereport(elevel,
+					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
+					 errmsg("background worker \"%s\": must attach to shared memory in order to request a database connection",
+							worker->bgw_name)));
+			return false;
+		}
+
 		if (worker->bgw_start_time == BgWorkerStart_PostmasterStart)
 		{
 			ereport(elevel,
@@ -732,6 +725,22 @@ bgworker_die(SIGNAL_ARGS)
 }
 
 /*
+ * Standard SIGUSR1 handler for unconnected workers
+ *
+ * Here, we want to make sure an unconnected worker will at least heed
+ * latch activity.
+ */
+static void
+bgworker_sigusr1_handler(SIGNAL_ARGS)
+{
+	int			save_errno = errno;
+
+	latch_sigusr1_handler();
+
+	errno = save_errno;
+}
+
+/*
  * Start a new background worker
  *
  * This is the main entry point for background worker, to be called from
@@ -751,6 +760,19 @@ StartBackgroundWorker(void)
 
 	MyBackendType = B_BG_WORKER;
 	init_ps_display(worker->bgw_name);
+
+	/*
+	 * If we're not supposed to have shared memory access, then detach from
+	 * shared memory.  If we didn't request shared memory access, the
+	 * postmaster won't force a cluster-wide restart if we exit unexpectedly,
+	 * so we'd better make sure that we don't mess anything up that would
+	 * require that sort of cleanup.
+	 */
+	if ((worker->bgw_flags & BGWORKER_SHMEM_ACCESS) == 0)
+	{
+		dsm_detach_all();
+		PGSharedMemoryDetach();
+	}
 
 	SetProcessingMode(InitProcessing);
 
@@ -775,13 +797,13 @@ StartBackgroundWorker(void)
 	else
 	{
 		pqsignal(SIGINT, SIG_IGN);
-		pqsignal(SIGUSR1, SIG_IGN);
+		pqsignal(SIGUSR1, bgworker_sigusr1_handler);
 		pqsignal(SIGFPE, SIG_IGN);
 	}
 	pqsignal(SIGTERM, bgworker_die);
-	/* SIGQUIT handler was already set up by InitPostmasterChild */
 	pqsignal(SIGHUP, SIG_IGN);
 
+	pqsignal(SIGQUIT, SignalHandlerForCrashExit);
 	InitializeTimeouts();		/* establishes SIGALRM handler */
 
 	pqsignal(SIGPIPE, SIG_IGN);
@@ -825,19 +847,29 @@ StartBackgroundWorker(void)
 	PG_exception_stack = &local_sigjmp_buf;
 
 	/*
-	 * Create a per-backend PGPROC struct in shared memory, except in the
-	 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must do
-	 * this before we can use LWLocks (and in the EXEC_BACKEND case we already
-	 * had to do some stuff with LWLocks).
+	 * If the background worker request shared memory access, set that up now;
+	 * else, detach all shared memory segments.
 	 */
-#ifndef EXEC_BACKEND
-	InitProcess();
-#endif
+	if (worker->bgw_flags & BGWORKER_SHMEM_ACCESS)
+	{
+		/*
+		 * Early initialization.  Some of this could be useful even for
+		 * background workers that aren't using shared memory, but they can
+		 * call the individual startup routines for those subsystems if
+		 * needed.
+		 */
+		BaseInit();
 
-	/*
-	 * Early initialization.
-	 */
-	BaseInit();
+		/*
+		 * Create a per-backend PGPROC struct in shared memory, except in the
+		 * EXEC_BACKEND case where this was done in SubPostmasterMain. We must
+		 * do this before we can use LWLocks (and in the EXEC_BACKEND case we
+		 * already had to do some stuff with LWLocks).
+		 */
+#ifndef EXEC_BACKEND
+		InitProcess();
+#endif
+	}
 
 	/*
 	 * Look up the entry point function, loading its library if necessary.
@@ -876,7 +908,7 @@ RegisterBackgroundWorker(BackgroundWorker *worker)
 
 	if (!IsUnderPostmaster)
 		ereport(DEBUG1,
-				(errmsg_internal("registering background worker \"%s\"", worker->bgw_name)));
+				(errmsg("registering background worker \"%s\"", worker->bgw_name)));
 
 	if (!process_shared_preload_libraries_in_progress &&
 		strcmp(worker->bgw_library_name, "postgres") != 0)

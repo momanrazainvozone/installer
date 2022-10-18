@@ -3,7 +3,7 @@
  * unsetenv.c
  *	  unsetenv() emulation for machines without it
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -16,20 +16,13 @@
 #include "c.h"
 
 
-int
+void
 unsetenv(const char *name)
 {
 	char	   *envstr;
 
-	/* Error conditions, per POSIX */
-	if (name == NULL || name[0] == '\0' || strchr(name, '=') != NULL)
-	{
-		errno = EINVAL;
-		return -1;
-	}
-
 	if (getenv(name) == NULL)
-		return 0;				/* no work */
+		return;					/* no work */
 
 	/*
 	 * The technique embodied here works if libc follows the Single Unix Spec
@@ -47,12 +40,11 @@ unsetenv(const char *name)
 
 	envstr = (char *) malloc(strlen(name) + 2);
 	if (!envstr)				/* not much we can do if no memory */
-		return -1;
+		return;
 
 	/* Override the existing setting by forcibly defining the var */
 	sprintf(envstr, "%s=", name);
-	if (putenv(envstr))
-		return -1;
+	putenv(envstr);
 
 	/* Now we can clobber the variable definition this way: */
 	strcpy(envstr, "=");
@@ -61,5 +53,5 @@ unsetenv(const char *name)
 	 * This last putenv cleans up if we have multiple zero-length names as a
 	 * result of unsetting multiple things.
 	 */
-	return putenv(envstr);
+	putenv(envstr);
 }

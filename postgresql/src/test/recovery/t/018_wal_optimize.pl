@@ -1,6 +1,3 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test WAL replay when some operation has skipped WAL.
 #
 # These tests exercise code that once violated the mandate described in
@@ -12,9 +9,9 @@
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 38;
 
 sub check_orphan_relfilenodes
 {
@@ -45,7 +42,7 @@ sub run_wal_optimize
 {
 	my $wal_level = shift;
 
-	my $node = PostgreSQL::Test::Cluster->new("node_$wal_level");
+	my $node = get_new_node("node_$wal_level");
 	$node->init;
 	$node->append_conf(
 		'postgresql.conf', qq(
@@ -147,7 +144,7 @@ wal_skip_threshold = 0
 	# Data file for COPY query in subsequent tests
 	my $basedir   = $node->basedir;
 	my $copy_file = "$basedir/copy_data.txt";
-	PostgreSQL::Test::Utils::append_to_file(
+	TestLib::append_to_file(
 		$copy_file, qq(20000,30000
 20001,30001
 20002,30002));
@@ -397,5 +394,3 @@ wal_skip_threshold = 0
 # Run same test suite for multiple wal_level values.
 run_wal_optimize("minimal");
 run_wal_optimize("replica");
-
-done_testing();

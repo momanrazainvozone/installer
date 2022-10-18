@@ -3,7 +3,7 @@
  * pg_visibility.c
  *	  display visibility map information and page-level visibility bits
  *
- * Copyright (c) 2016-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2020, PostgreSQL Global Development Group
  *
  *	  contrib/pg_visibility/pg_visibility.c
  *-------------------------------------------------------------------------
@@ -13,7 +13,6 @@
 #include "access/heapam.h"
 #include "access/htup_details.h"
 #include "access/visibilitymap.h"
-#include "access/xloginsert.h"
 #include "catalog/pg_type.h"
 #include "catalog/storage_xlog.h"
 #include "funcapi.h"
@@ -392,14 +391,14 @@ pg_truncate_visibility_map(PG_FUNCTION_ARGS)
 	/* Only some relkinds have a visibility map */
 	check_relation_relkind(rel);
 
-	/* Forcibly reset cached file size */
-	RelationGetSmgr(rel)->smgr_cached_nblocks[VISIBILITYMAP_FORKNUM] = InvalidBlockNumber;
+	RelationOpenSmgr(rel);
+	rel->rd_smgr->smgr_vm_nblocks = InvalidBlockNumber;
 
 	block = visibilitymap_prepare_truncate(rel, 0);
 	if (BlockNumberIsValid(block))
 	{
 		fork = VISIBILITYMAP_FORKNUM;
-		smgrtruncate(RelationGetSmgr(rel), &fork, 1, &block);
+		smgrtruncate(rel->rd_smgr, &fork, 1, &block);
 	}
 
 	if (RelationNeedsWAL(rel))
@@ -564,13 +563,16 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 	BufferAccessStrategy bstrategy = GetAccessStrategy(BAS_BULKREAD);
 	TransactionId OldestXmin = InvalidTransactionId;
 
+	if (all_visible)
+	{
+		/* Don't pass rel; that will fail in recovery. */
+		OldestXmin = GetOldestXmin(NULL, PROCARRAY_FLAGS_VACUUM);
+	}
+
 	rel = relation_open(relid, AccessShareLock);
 
 	/* Only some relkinds have a visibility map */
 	check_relation_relkind(rel);
-
-	if (all_visible)
-		OldestXmin = GetOldestNonRemovableTransactionId(rel);
 
 	nblocks = RelationGetNumberOfBlocks(rel);
 
@@ -677,12 +679,11 @@ collect_corrupt_items(Oid relid, bool all_visible, bool all_frozen)
 				 * From a concurrency point of view, it sort of sucks to
 				 * retake ProcArrayLock here while we're holding the buffer
 				 * exclusively locked, but it should be safe against
-				 * deadlocks, because surely
-				 * GetOldestNonRemovableTransactionId() should never take a
-				 * buffer lock. And this shouldn't happen often, so it's worth
-				 * being careful so as to avoid false positives.
+				 * deadlocks, because surely GetOldestXmin() should never take
+				 * a buffer lock. And this shouldn't happen often, so it's
+				 * worth being careful so as to avoid false positives.
 				 */
-				RecomputedOldestXmin = GetOldestNonRemovableTransactionId(rel);
+				RecomputedOldestXmin = GetOldestXmin(NULL, PROCARRAY_FLAGS_VACUUM);
 
 				if (!TransactionIdPrecedes(OldestXmin, RecomputedOldestXmin))
 					record_corrupt_item(items, &tuple.t_self);
@@ -777,10 +778,11 @@ tuple_all_visible(HeapTuple tup, TransactionId OldestXmin, Buffer buffer)
 static void
 check_relation_relkind(Relation rel)
 {
-	if (!RELKIND_HAS_TABLE_AM(rel->rd_rel->relkind))
+	if (rel->rd_rel->relkind != RELKIND_RELATION &&
+		rel->rd_rel->relkind != RELKIND_MATVIEW &&
+		rel->rd_rel->relkind != RELKIND_TOASTVALUE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("relation \"%s\" is of wrong relation kind",
-						RelationGetRelationName(rel)),
-				 errdetail_relkind_not_supported(rel->rd_rel->relkind)));
+				 errmsg("\"%s\" is not a table, materialized view, or TOAST table",
+						RelationGetRelationName(rel))));
 }

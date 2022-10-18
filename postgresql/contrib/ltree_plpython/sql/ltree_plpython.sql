@@ -1,8 +1,8 @@
-CREATE EXTENSION ltree_plpython3u CASCADE;
+CREATE EXTENSION ltree_plpython2u CASCADE;
 
 
 CREATE FUNCTION test1(val ltree) RETURNS int
-LANGUAGE plpython3u
+LANGUAGE plpythonu
 TRANSFORM FOR TYPE ltree
 AS $$
 plpy.info(repr(val))
@@ -13,7 +13,7 @@ SELECT test1('aa.bb.cc'::ltree);
 
 
 CREATE FUNCTION test1n(val ltree) RETURNS int
-LANGUAGE plpython3u
+LANGUAGE plpython2u
 TRANSFORM FOR TYPE ltree
 AS $$
 plpy.info(repr(val))
@@ -24,7 +24,7 @@ SELECT test1n('aa.bb.cc'::ltree);
 
 
 CREATE FUNCTION test2() RETURNS ltree
-LANGUAGE plpython3u
+LANGUAGE plpythonu
 TRANSFORM FOR TYPE ltree
 AS $$
 return ['foo', 'bar', 'baz']

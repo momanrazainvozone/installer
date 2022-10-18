@@ -3,7 +3,7 @@
  * rewriteDefine.c
  *	  routines for defining a rewrite rule
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -23,6 +23,7 @@
 #include "catalog/catalog.h"
 #include "catalog/dependency.h"
 #include "catalog/heap.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/objectaccess.h"
 #include "catalog/pg_inherits.h"
@@ -268,9 +269,8 @@ DefineQueryRewrite(const char *rulename,
 		event_relation->rd_rel->relkind != RELKIND_PARTITIONED_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("relation \"%s\" cannot have rules",
-						RelationGetRelationName(event_relation)),
-				 errdetail_relkind_not_supported(event_relation->rd_rel->relkind)));
+				 errmsg("\"%s\" is not a table or view",
+						RelationGetRelationName(event_relation))));
 
 	if (!allowSystemTableMods && IsSystemRelation(event_relation))
 		ereport(ERROR,
@@ -632,7 +632,7 @@ DefineQueryRewrite(const char *rulename,
 		classForm->relam = InvalidOid;
 		classForm->reltablespace = InvalidOid;
 		classForm->relpages = 0;
-		classForm->reltuples = -1;
+		classForm->reltuples = 0;
 		classForm->relallvisible = 0;
 		classForm->reltoastrelid = InvalidOid;
 		classForm->relhasindex = false;
@@ -936,8 +936,7 @@ RangeVarCallbackForRenameRule(const RangeVar *rv, Oid relid, Oid oldrelid,
 		form->relkind != RELKIND_PARTITIONED_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-				 errmsg("relation \"%s\" cannot have rules", rv->relname),
-				 errdetail_relkind_not_supported(form->relkind)));
+				 errmsg("\"%s\" is not a table or view", rv->relname)));
 
 	if (!allowSystemTableMods && IsSystemClass(relid, form))
 		ereport(ERROR,

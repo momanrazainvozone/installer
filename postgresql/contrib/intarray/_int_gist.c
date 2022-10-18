@@ -93,12 +93,6 @@ g_int_consistent(PG_FUNCTION_ARGS)
 			break;
 		case RTContainedByStrategyNumber:
 		case RTOldContainedByStrategyNumber:
-
-			/*
-			 * This code is unreachable as of intarray 1.4, because the <@
-			 * operator has been removed from the opclass.  We keep it for now
-			 * to support older versions of the SQL definitions.
-			 */
 			if (GIST_LEAF(entry))
 				retval = inner_int_contains(query,
 											(ArrayType *) DatumGetPointer(entry->key));

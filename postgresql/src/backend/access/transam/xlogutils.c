@@ -8,7 +8,7 @@
  * None of this code is used during normal system operation.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/backend/access/transam/xlogutils.c
@@ -20,13 +20,11 @@
 #include <unistd.h>
 
 #include "access/timeline.h"
-#include "access/xlogrecovery.h"
+#include "access/xlog.h"
 #include "access/xlog_internal.h"
-#include "access/xlogprefetcher.h"
 #include "access/xlogutils.h"
 #include "miscadmin.h"
 #include "pgstat.h"
-#include "storage/fd.h"
 #include "storage/smgr.h"
 #include "utils/guc.h"
 #include "utils/hsearch.h"
@@ -35,25 +33,6 @@
 
 /* GUC variable */
 bool		ignore_invalid_pages = false;
-
-/*
- * Are we doing recovery from XLOG?
- *
- * This is only ever true in the startup process; it should be read as meaning
- * "this process is replaying WAL records", rather than "the system is in
- * recovery mode".  It should be examined primarily by functions that need
- * to act differently when called from a WAL redo function (e.g., to skip WAL
- * logging).  To check whether the system is in recovery regardless of which
- * process you're running in, use RecoveryInProgress() but only after shared
- * memory startup and lock initialization.
- *
- * This is updated from xlog.c and xlogrecovery.c, but lives here because
- * it's mostly read by WAL redo functions.
- */
-bool		InRecovery = false;
-
-/* Are we in Hot Standby mode? Only valid in startup process, see xlogutils.h */
-HotStandbyState standbyState = STANDBY_DISABLED;
 
 /*
  * During XLOG replay, we may see XLOG records for incremental updates of
@@ -80,9 +59,6 @@ typedef struct xl_invalid_page
 
 static HTAB *invalid_page_tab = NULL;
 
-static int	read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
-									  int reqLen, XLogRecPtr targetRecPtr,
-									  char *cur_page, bool wait_for_wal);
 
 /* Report a reference to an invalid page */
 static void
@@ -129,7 +105,7 @@ log_invalid_page(RelFileNode node, ForkNumber forkno, BlockNumber blkno,
 	 * tracing of the cause (note the elog context mechanism will tell us
 	 * something about the XLOG record that generated the reference).
 	 */
-	if (message_level_is_interesting(DEBUG1))
+	if (log_min_messages <= DEBUG1 || client_min_messages <= DEBUG1)
 		report_invalid_page(DEBUG1, node, forkno, blkno, present);
 
 	if (invalid_page_tab == NULL)
@@ -137,6 +113,7 @@ log_invalid_page(RelFileNode node, ForkNumber forkno, BlockNumber blkno,
 		/* create hash table when first needed */
 		HASHCTL		ctl;
 
+		memset(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(xl_invalid_page_key);
 		ctl.entrysize = sizeof(xl_invalid_page);
 
@@ -182,7 +159,7 @@ forget_invalid_pages(RelFileNode node, ForkNumber forkno, BlockNumber minblkno)
 			hentry->key.forkno == forkno &&
 			hentry->key.blkno >= minblkno)
 		{
-			if (message_level_is_interesting(DEBUG2))
+			if (log_min_messages <= DEBUG2 || client_min_messages <= DEBUG2)
 			{
 				char	   *path = relpathperm(hentry->key.node, forkno);
 
@@ -215,7 +192,7 @@ forget_invalid_pages_db(Oid dbid)
 	{
 		if (hentry->key.node.dbNode == dbid)
 		{
-			if (message_level_is_interesting(DEBUG2))
+			if (log_min_messages <= DEBUG2 || client_min_messages <= DEBUG2)
 			{
 				char	   *path = relpathperm(hentry->key.node, hentry->key.forkno);
 
@@ -283,9 +260,10 @@ XLogCheckInvalidPages(void)
  * determines what needs to be done to redo the changes to it.  If the WAL
  * record includes a full-page image of the page, it is restored.
  *
- * 'record.EndRecPtr' is compared to the page's LSN to determine if the record
- * has already been replayed.  'block_id' is the ID number the block was
- * registered with, when the WAL record was created.
+ * 'lsn' is the LSN of the record being replayed.  It is compared with the
+ * page's LSN to determine if the record has already been replayed.
+ * 'block_id' is the ID number the block was registered with, when the WAL
+ * record was created.
  *
  * Returns one of the following:
  *
@@ -359,17 +337,14 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	RelFileNode rnode;
 	ForkNumber	forknum;
 	BlockNumber blkno;
-	Buffer		prefetch_buffer;
 	Page		page;
 	bool		zeromode;
 	bool		willinit;
 
-	if (!XLogRecGetBlockTagExtended(record, block_id, &rnode, &forknum, &blkno,
-									&prefetch_buffer))
+	if (!XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blkno))
 	{
 		/* Caller specified a bogus block_id */
-		elog(PANIC, "failed to locate backup block with ID %d in WAL record",
-			 block_id);
+		elog(PANIC, "failed to locate backup block with ID %d", block_id);
 	}
 
 	/*
@@ -377,7 +352,7 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	 * going to initialize it. And vice versa.
 	 */
 	zeromode = (mode == RBM_ZERO_AND_LOCK || mode == RBM_ZERO_AND_CLEANUP_LOCK);
-	willinit = (XLogRecGetBlock(record, block_id)->flags & BKPBLOCK_WILL_INIT) != 0;
+	willinit = (record->blocks[block_id].flags & BKPBLOCK_WILL_INIT) != 0;
 	if (willinit && !zeromode)
 		elog(PANIC, "block with WILL_INIT flag in WAL record must be zeroed by redo routine");
 	if (!willinit && zeromode)
@@ -388,13 +363,10 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	{
 		Assert(XLogRecHasBlockImage(record, block_id));
 		*buf = XLogReadBufferExtended(rnode, forknum, blkno,
-									  get_cleanup_lock ? RBM_ZERO_AND_CLEANUP_LOCK : RBM_ZERO_AND_LOCK,
-									  prefetch_buffer);
+									  get_cleanup_lock ? RBM_ZERO_AND_CLEANUP_LOCK : RBM_ZERO_AND_LOCK);
 		page = BufferGetPage(*buf);
 		if (!RestoreBlockImage(record, block_id, page))
-			ereport(ERROR,
-					(errcode(ERRCODE_INTERNAL_ERROR),
-					 errmsg_internal("%s", record->errormsg_buf)));
+			elog(ERROR, "failed to restore block image");
 
 		/*
 		 * The page may be uninitialized. If so, we can't set the LSN because
@@ -420,7 +392,7 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
 	}
 	else
 	{
-		*buf = XLogReadBufferExtended(rnode, forknum, blkno, mode, prefetch_buffer);
+		*buf = XLogReadBufferExtended(rnode, forknum, blkno, mode);
 		if (BufferIsValid(*buf))
 		{
 			if (mode != RBM_ZERO_AND_LOCK && mode != RBM_ZERO_AND_CLEANUP_LOCK)
@@ -460,34 +432,21 @@ XLogReadBufferForRedoExtended(XLogReaderState *record,
  * exist, and we don't check for all-zeroes.  Thus, no log entry is made
  * to imply that the page should be dropped or truncated later.
  *
- * Optionally, recent_buffer can be used to provide a hint about the location
- * of the page in the buffer pool; it does not have to be correct, but avoids
- * a buffer mapping table probe if it is.
- *
  * NB: A redo function should normally not call this directly. To get a page
  * to modify, use XLogReadBufferForRedoExtended instead. It is important that
  * all pages modified by a WAL record are registered in the WAL records, or
- * they will be invisible to tools that need to know which pages are modified.
+ * they will be invisible to tools that that need to know which pages are
+ * modified.
  */
 Buffer
 XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
-					   BlockNumber blkno, ReadBufferMode mode,
-					   Buffer recent_buffer)
+					   BlockNumber blkno, ReadBufferMode mode)
 {
 	BlockNumber lastblock;
 	Buffer		buffer;
 	SMgrRelation smgr;
 
 	Assert(blkno != P_NEW);
-
-	/* Do we have a clue where the buffer might be already? */
-	if (BufferIsValid(recent_buffer) &&
-		mode == RBM_NORMAL &&
-		ReadRecentBuffer(rnode, forknum, blkno, recent_buffer))
-	{
-		buffer = recent_buffer;
-		goto recent_buffer_fast_path;
-	}
 
 	/* Open the relation at smgr level */
 	smgr = smgropen(rnode, InvalidBackendId);
@@ -508,7 +467,7 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 	{
 		/* page exists in file */
 		buffer = ReadBufferWithoutRelcache(rnode, forknum, blkno,
-										   mode, NULL, true);
+										   mode, NULL);
 	}
 	else
 	{
@@ -533,7 +492,7 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 				ReleaseBuffer(buffer);
 			}
 			buffer = ReadBufferWithoutRelcache(rnode, forknum,
-											   P_NEW, mode, NULL, true);
+											   P_NEW, mode, NULL);
 		}
 		while (BufferGetBlockNumber(buffer) < blkno);
 		/* Handle the corner case that P_NEW returns non-consecutive pages */
@@ -543,11 +502,10 @@ XLogReadBufferExtended(RelFileNode rnode, ForkNumber forknum,
 				LockBuffer(buffer, BUFFER_LOCK_UNLOCK);
 			ReleaseBuffer(buffer);
 			buffer = ReadBufferWithoutRelcache(rnode, forknum, blkno,
-											   mode, NULL, true);
+											   mode, NULL);
 		}
 	}
 
-recent_buffer_fast_path:
 	if (mode == RBM_NORMAL)
 	{
 		/* check that page has been initialized */
@@ -696,16 +654,12 @@ XLogTruncateRelation(RelFileNode rnode, ForkNumber forkNum,
  *
  * We care about timelines in xlogreader when we might be reading xlog
  * generated prior to a promotion, either if we're currently a standby in
- * recovery or if we're a promoted primary reading xlogs generated by the old
- * primary before our promotion.
+ * recovery or if we're a promoted master reading xlogs generated by the old
+ * master before our promotion.
  *
  * wantPage must be set to the start address of the page to read and
  * wantLength to the amount of the page that will be read, up to
  * XLOG_BLCKSZ. If the amount to be read isn't known, pass XLOG_BLCKSZ.
- *
- * The currTLI argument should be the system-wide current timeline.
- * Note that this may be different from state->currTLI, which is the timeline
- * from which the caller is currently reading previous xlog records.
  *
  * We switch to an xlog segment from the new timeline eagerly when on a
  * historical timeline, as soon as we reach the start of the xlog segment
@@ -728,11 +682,12 @@ XLogTruncateRelation(RelFileNode rnode, ForkNumber forkNum,
  *
  * The caller must also make sure it doesn't read past the current replay
  * position (using GetXLogReplayRecPtr) if executing in recovery, so it
- * doesn't fail to notice that the current timeline became historical.
+ * doesn't fail to notice that the current timeline became historical. The
+ * caller must also update ThisTimeLineID with the result of
+ * GetXLogReplayRecPtr and must check RecoveryInProgress().
  */
 void
-XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
-						  uint32 wantLength, TimeLineID currTLI)
+XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage, uint32 wantLength)
 {
 	const XLogRecPtr lastReadPage = (state->seg.ws_segno *
 									 state->segcxt.ws_segsize + state->segoff);
@@ -740,7 +695,6 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
 	Assert(wantPage != InvalidXLogRecPtr && wantPage % XLOG_BLCKSZ == 0);
 	Assert(wantLength <= XLOG_BLCKSZ);
 	Assert(state->readLen == 0 || state->readLen <= XLOG_BLCKSZ);
-	Assert(currTLI != 0);
 
 	/*
 	 * If the desired page is currently read in and valid, we have nothing to
@@ -761,12 +715,12 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
 	 * just carry on. (Seeking backwards requires a check to make sure the
 	 * older page isn't on a prior timeline).
 	 *
-	 * currTLI might've become historical since the caller obtained the value,
-	 * but the caller is required not to read past the flush limit it saw at
-	 * the time it looked up the timeline. There's nothing we can do about it
-	 * if StartupXLOG() renames it to .partial concurrently.
+	 * ThisTimeLineID might've become historical since we last looked, but the
+	 * caller is required not to read past the flush limit it saw at the time
+	 * it looked up the timeline. There's nothing we can do about it if
+	 * StartupXLOG() renames it to .partial concurrently.
 	 */
-	if (state->currTLI == currTLI && wantPage >= lastReadPage)
+	if (state->currTLI == ThisTimeLineID && wantPage >= lastReadPage)
 	{
 		Assert(state->currTLIValidUntil == InvalidXLogRecPtr);
 		return;
@@ -778,7 +732,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
 	 * the current segment we can just keep reading.
 	 */
 	if (state->currTLIValidUntil != InvalidXLogRecPtr &&
-		state->currTLI != currTLI &&
+		state->currTLI != ThisTimeLineID &&
 		state->currTLI != 0 &&
 		((wantPage + wantLength) / state->segcxt.ws_segsize) <
 		(state->currTLIValidUntil / state->segcxt.ws_segsize))
@@ -801,7 +755,7 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
 		 * We need to re-read the timeline history in case it's been changed
 		 * by a promotion or replay from a cascaded replica.
 		 */
-		List	   *timelineHistory = readTimeLineHistory(currTLI);
+		List	   *timelineHistory = readTimeLineHistory(ThisTimeLineID);
 		XLogRecPtr	endOfSegment;
 
 		endOfSegment = ((wantPage / state->segcxt.ws_segsize) + 1) *
@@ -824,7 +778,8 @@ XLogReadDetermineTimeline(XLogReaderState *state, XLogRecPtr wantPage,
 
 		elog(DEBUG3, "switched to timeline %u valid until %X/%X",
 			 state->currTLI,
-			 LSN_FORMAT_ARGS(state->currTLIValidUntil));
+			 (uint32) (state->currTLIValidUntil >> 32),
+			 (uint32) (state->currTLIValidUntil));
 	}
 }
 
@@ -877,37 +832,11 @@ int
 read_local_xlog_page(XLogReaderState *state, XLogRecPtr targetPagePtr,
 					 int reqLen, XLogRecPtr targetRecPtr, char *cur_page)
 {
-	return read_local_xlog_page_guts(state, targetPagePtr, reqLen,
-									 targetRecPtr, cur_page, true);
-}
-
-/*
- * Same as read_local_xlog_page except that it doesn't wait for future WAL
- * to be available.
- */
-int
-read_local_xlog_page_no_wait(XLogReaderState *state, XLogRecPtr targetPagePtr,
-							 int reqLen, XLogRecPtr targetRecPtr,
-							 char *cur_page)
-{
-	return read_local_xlog_page_guts(state, targetPagePtr, reqLen,
-									 targetRecPtr, cur_page, false);
-}
-
-/*
- * Implementation of read_local_xlog_page and its no wait version.
- */
-static int
-read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
-						  int reqLen, XLogRecPtr targetRecPtr,
-						  char *cur_page, bool wait_for_wal)
-{
 	XLogRecPtr	read_upto,
 				loc;
 	TimeLineID	tli;
 	int			count;
 	WALReadError errinfo;
-	TimeLineID	currTLI;
 
 	loc = targetPagePtr + reqLen;
 
@@ -917,12 +846,16 @@ read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		/*
 		 * Determine the limit of xlog we can currently read to, and what the
 		 * most recent timeline is.
+		 *
+		 * RecoveryInProgress() will update ThisTimeLineID when it first
+		 * notices recovery finishes, so we only have to maintain it for the
+		 * local process until recovery ends.
 		 */
 		if (!RecoveryInProgress())
-			read_upto = GetFlushRecPtr(&currTLI);
+			read_upto = GetFlushRecPtr();
 		else
-			read_upto = GetXLogReplayRecPtr(&currTLI);
-		tli = currTLI;
+			read_upto = GetXLogReplayRecPtr(&ThisTimeLineID);
+		tli = ThisTimeLineID;
 
 		/*
 		 * Check which timeline to get the record from.
@@ -941,35 +874,20 @@ read_local_xlog_page_guts(XLogReaderState *state, XLogRecPtr targetPagePtr,
 		 * archive in the timeline will get renamed to .partial by
 		 * StartupXLOG().
 		 *
-		 * If that happens after our caller determined the TLI but before we
-		 * actually read the xlog page, we might still try to read from the
+		 * If that happens after our caller updated ThisTimeLineID but before
+		 * we actually read the xlog page, we might still try to read from the
 		 * old (now renamed) segment and fail. There's not much we can do
 		 * about this, but it can only happen when we're a leaf of a cascading
-		 * standby whose primary gets promoted while we're decoding, so a
+		 * standby whose master gets promoted while we're decoding, so a
 		 * one-off ERROR isn't too bad.
 		 */
-		XLogReadDetermineTimeline(state, targetPagePtr, reqLen, tli);
+		XLogReadDetermineTimeline(state, targetPagePtr, reqLen);
 
-		if (state->currTLI == currTLI)
+		if (state->currTLI == ThisTimeLineID)
 		{
 
 			if (loc <= read_upto)
 				break;
-
-			/* If asked, let's not wait for future WAL. */
-			if (!wait_for_wal)
-			{
-				ReadLocalXLogPageNoWaitPrivate *private_data;
-
-				/*
-				 * Inform the caller of read_local_xlog_page_no_wait that the
-				 * end of WAL has been reached.
-				 */
-				private_data = (ReadLocalXLogPageNoWaitPrivate *)
-					state->private_data;
-				private_data->end_of_wal = true;
-				break;
-			}
 
 			CHECK_FOR_INTERRUPTS();
 			pg_usleep(1000L);
@@ -1050,15 +968,15 @@ WALReadRaiseError(WALReadError *errinfo)
 		errno = errinfo->wre_errno;
 		ereport(ERROR,
 				(errcode_for_file_access(),
-				 errmsg("could not read from log segment %s, offset %d: %m",
+				 errmsg("could not read from log segment %s, offset %u: %m",
 						fname, errinfo->wre_off)));
 	}
 	else if (errinfo->wre_read == 0)
 	{
 		ereport(ERROR,
 				(errcode(ERRCODE_DATA_CORRUPTED),
-				 errmsg("could not read from log segment %s, offset %d: read %d of %d",
+				 errmsg("could not read from log segment %s, offset %u: read %d of %zu",
 						fname, errinfo->wre_off, errinfo->wre_read,
-						errinfo->wre_req)));
+						(Size) errinfo->wre_req)));
 	}
 }

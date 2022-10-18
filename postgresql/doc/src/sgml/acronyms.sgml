@@ -299,7 +299,9 @@
     <term><acronym>HOT</acronym></term>
     <listitem>
      <para>
-      <link linkend="storage-hot">Heap-Only Tuples</link>
+      <ulink
+      url="https://git.postgresql.org/gitweb/?p=postgresql.git;a=blob;f=src/backend/access/heap/README.HOT;hb=HEAD">Heap-Only
+      Tuples</ulink>
      </para>
     </listitem>
    </varlistentry>
@@ -404,17 +406,6 @@
      <para>
       Log Sequence Number, see <link linkend="datatype-pg-lsn"><type>pg_lsn</type></link>
       and <link linkend="wal-internals">WAL Internals</link>.
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><acronym>MITM</acronym></term>
-    <listitem>
-     <para>
-      <ulink
-      url="https://en.wikipedia.org/wiki/Man-in-the-middle_attack">
-      Man-in-the-middle attack</ulink>
      </para>
     </listitem>
    </varlistentry>
@@ -595,18 +586,6 @@
      <para>
       <ulink url="https://en.wikipedia.org/wiki/SGML">Standard Generalized
       Markup Language</ulink>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term><acronym>SNI</acronym></term>
-    <listitem>
-     <para>
-      <ulink
-      url="https://en.wikipedia.org/wiki/Server_Name_Indication">
-       Server Name Indication</ulink>,
-      <ulink url="https://tools.ietf.org/html/rfc6066#section-3">RFC 6066</ulink>
      </para>
     </listitem>
    </varlistentry>

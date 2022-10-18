@@ -3,7 +3,7 @@
  * hashovfl.c
  *	  Overflow page management code for the Postgres hash access method
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -19,7 +19,6 @@
 
 #include "access/hash.h"
 #include "access/hash_xlog.h"
-#include "access/xloginsert.h"
 #include "miscadmin.h"
 #include "utils/rel.h"
 
@@ -159,7 +158,7 @@ _hash_addovflpage(Relation rel, Buffer metabuf, Buffer buf, bool retain_pin)
 		BlockNumber nextblkno;
 
 		page = BufferGetPage(buf);
-		pageopaque = HashPageGetOpaque(page);
+		pageopaque = (HashPageOpaque) PageGetSpecialPointer(page);
 		nextblkno = pageopaque->hasho_nextblkno;
 
 		if (!BlockNumberIsValid(nextblkno))
@@ -364,7 +363,7 @@ found:
 
 	/* initialize new overflow page */
 	ovflpage = BufferGetPage(ovflbuf);
-	ovflopaque = HashPageGetOpaque(ovflpage);
+	ovflopaque = (HashPageOpaque) PageGetSpecialPointer(ovflpage);
 	ovflopaque->hasho_prevblkno = BufferGetBlockNumber(buf);
 	ovflopaque->hasho_nextblkno = InvalidBlockNumber;
 	ovflopaque->hasho_bucket = pageopaque->hasho_bucket;
@@ -516,7 +515,7 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	_hash_checkpage(rel, ovflbuf, LH_OVERFLOW_PAGE);
 	ovflblkno = BufferGetBlockNumber(ovflbuf);
 	ovflpage = BufferGetPage(ovflbuf);
-	ovflopaque = HashPageGetOpaque(ovflpage);
+	ovflopaque = (HashPageOpaque) PageGetSpecialPointer(ovflpage);
 	nextblkno = ovflopaque->hasho_nextblkno;
 	prevblkno = ovflopaque->hasho_prevblkno;
 	writeblkno = BufferGetBlockNumber(wbuf);
@@ -600,11 +599,11 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	 */
 	_hash_pageinit(ovflpage, BufferGetPageSize(ovflbuf));
 
-	ovflopaque = HashPageGetOpaque(ovflpage);
+	ovflopaque = (HashPageOpaque) PageGetSpecialPointer(ovflpage);
 
 	ovflopaque->hasho_prevblkno = InvalidBlockNumber;
 	ovflopaque->hasho_nextblkno = InvalidBlockNumber;
-	ovflopaque->hasho_bucket = InvalidBucket;
+	ovflopaque->hasho_bucket = -1;
 	ovflopaque->hasho_flag = LH_UNUSED_PAGE;
 	ovflopaque->hasho_page_id = HASHO_PAGE_ID;
 
@@ -613,7 +612,7 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	if (BufferIsValid(prevbuf))
 	{
 		Page		prevpage = BufferGetPage(prevbuf);
-		HashPageOpaque prevopaque = HashPageGetOpaque(prevpage);
+		HashPageOpaque prevopaque = (HashPageOpaque) PageGetSpecialPointer(prevpage);
 
 		Assert(prevopaque->hasho_bucket == bucket);
 		prevopaque->hasho_nextblkno = nextblkno;
@@ -622,7 +621,7 @@ _hash_freeovflpage(Relation rel, Buffer bucketbuf, Buffer ovflbuf,
 	if (BufferIsValid(nextbuf))
 	{
 		Page		nextpage = BufferGetPage(nextbuf);
-		HashPageOpaque nextopaque = HashPageGetOpaque(nextpage);
+		HashPageOpaque nextopaque = (HashPageOpaque) PageGetSpecialPointer(nextpage);
 
 		Assert(nextopaque->hasho_bucket == bucket);
 		nextopaque->hasho_prevblkno = prevblkno;
@@ -751,10 +750,10 @@ _hash_initbitmapbuffer(Buffer buf, uint16 bmsize, bool initpage)
 		_hash_pageinit(pg, BufferGetPageSize(buf));
 
 	/* initialize the page's special space */
-	op = HashPageGetOpaque(pg);
+	op = (HashPageOpaque) PageGetSpecialPointer(pg);
 	op->hasho_prevblkno = InvalidBlockNumber;
 	op->hasho_nextblkno = InvalidBlockNumber;
-	op->hasho_bucket = InvalidBucket;
+	op->hasho_bucket = -1;
 	op->hasho_flag = LH_BITMAP_PAGE;
 	op->hasho_page_id = HASHO_PAGE_ID;
 
@@ -824,7 +823,7 @@ _hash_squeezebucket(Relation rel,
 	wblkno = bucket_blkno;
 	wbuf = bucket_buf;
 	wpage = BufferGetPage(wbuf);
-	wopaque = HashPageGetOpaque(wpage);
+	wopaque = (HashPageOpaque) PageGetSpecialPointer(wpage);
 
 	/*
 	 * if there aren't any overflow pages, there's nothing to squeeze. caller
@@ -855,7 +854,7 @@ _hash_squeezebucket(Relation rel,
 										  LH_OVERFLOW_PAGE,
 										  bstrategy);
 		rpage = BufferGetPage(rbuf);
-		ropaque = HashPageGetOpaque(rpage);
+		ropaque = (HashPageOpaque) PageGetSpecialPointer(rpage);
 		Assert(ropaque->hasho_bucket == bucket);
 	} while (BlockNumberIsValid(ropaque->hasho_nextblkno));
 
@@ -954,7 +953,7 @@ readpage:
 						xl_hash_move_page_contents xlrec;
 
 						xlrec.ntups = nitups;
-						xlrec.is_prim_bucket_same_wrt = (wbuf == bucket_buf);
+						xlrec.is_prim_bucket_same_wrt = (wbuf == bucket_buf) ? true : false;
 
 						XLogBeginInsert();
 						XLogRegisterData((char *) &xlrec, SizeOfHashMovePageContents);
@@ -1005,7 +1004,7 @@ readpage:
 
 				wbuf = next_wbuf;
 				wpage = BufferGetPage(wbuf);
-				wopaque = HashPageGetOpaque(wpage);
+				wopaque = (HashPageOpaque) PageGetSpecialPointer(wpage);
 				Assert(wopaque->hasho_bucket == bucket);
 				retain_pin = false;
 
@@ -1076,7 +1075,7 @@ readpage:
 										  LH_OVERFLOW_PAGE,
 										  bstrategy);
 		rpage = BufferGetPage(rbuf);
-		ropaque = HashPageGetOpaque(rpage);
+		ropaque = (HashPageOpaque) PageGetSpecialPointer(rpage);
 		Assert(ropaque->hasho_bucket == bucket);
 	}
 

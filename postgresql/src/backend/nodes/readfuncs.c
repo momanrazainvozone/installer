@@ -3,7 +3,7 @@
  * readfuncs.c
  *	  Reader functions for Postgres tree nodes.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -32,11 +32,13 @@
 
 #include <math.h>
 
+#include "fmgr.h"
 #include "miscadmin.h"
 #include "nodes/extensible.h"
 #include "nodes/parsenodes.h"
 #include "nodes/plannodes.h"
 #include "nodes/readfuncs.h"
+#include "utils/builtins.h"
 
 
 /*
@@ -78,7 +80,7 @@
 #define READ_UINT64_FIELD(fldname) \
 	token = pg_strtok(&length);		/* skip :fldname */ \
 	token = pg_strtok(&length);		/* get field value */ \
-	local_node->fldname = strtou64(token, NULL, 10)
+	local_node->fldname = pg_strtouint64(token, NULL, 10)
 
 /* Read a long integer field (anything written as ":fldname %ld") */
 #define READ_LONG_FIELD(fldname) \
@@ -261,7 +263,6 @@ _readQuery(void)
 	READ_BOOL_FIELD(hasModifyingCTE);
 	READ_BOOL_FIELD(hasForUpdate);
 	READ_BOOL_FIELD(hasRowSecurity);
-	READ_BOOL_FIELD(isReturn);
 	READ_NODE_FIELD(cteList);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(jointree);
@@ -270,7 +271,6 @@ _readQuery(void)
 	READ_NODE_FIELD(onConflict);
 	READ_NODE_FIELD(returningList);
 	READ_NODE_FIELD(groupClause);
-	READ_BOOL_FIELD(groupDistinct);
 	READ_NODE_FIELD(groupingSets);
 	READ_NODE_FIELD(havingQual);
 	READ_NODE_FIELD(windowClause);
@@ -283,8 +283,6 @@ _readQuery(void)
 	READ_NODE_FIELD(setOperations);
 	READ_NODE_FIELD(constraintDeps);
 	READ_NODE_FIELD(withCheckOptions);
-	READ_NODE_FIELD(mergeActionList);
-	READ_BOOL_FIELD(mergeUseOuterJoin);
 	READ_LOCATION_FIELD(stmt_location);
 	READ_INT_FIELD(stmt_len);
 
@@ -384,7 +382,6 @@ _readWindowClause(void)
 	READ_INT_FIELD(frameOptions);
 	READ_NODE_FIELD(startOffset);
 	READ_NODE_FIELD(endOffset);
-	READ_NODE_FIELD(runCondition);
 	READ_OID_FIELD(startInRangeFunc);
 	READ_OID_FIELD(endInRangeFunc);
 	READ_OID_FIELD(inRangeColl);
@@ -413,44 +410,6 @@ _readRowMarkClause(void)
 }
 
 /*
- * _readCTESearchClause
- */
-static CTESearchClause *
-_readCTESearchClause(void)
-{
-	READ_LOCALS(CTESearchClause);
-
-	READ_NODE_FIELD(search_col_list);
-	READ_BOOL_FIELD(search_breadth_first);
-	READ_STRING_FIELD(search_seq_column);
-	READ_LOCATION_FIELD(location);
-
-	READ_DONE();
-}
-
-/*
- * _readCTECycleClause
- */
-static CTECycleClause *
-_readCTECycleClause(void)
-{
-	READ_LOCALS(CTECycleClause);
-
-	READ_NODE_FIELD(cycle_col_list);
-	READ_STRING_FIELD(cycle_mark_column);
-	READ_NODE_FIELD(cycle_mark_value);
-	READ_NODE_FIELD(cycle_mark_default);
-	READ_STRING_FIELD(cycle_path_column);
-	READ_LOCATION_FIELD(location);
-	READ_OID_FIELD(cycle_mark_type);
-	READ_INT_FIELD(cycle_mark_typmod);
-	READ_OID_FIELD(cycle_mark_collation);
-	READ_OID_FIELD(cycle_mark_neop);
-
-	READ_DONE();
-}
-
-/*
  * _readCommonTableExpr
  */
 static CommonTableExpr *
@@ -462,8 +421,6 @@ _readCommonTableExpr(void)
 	READ_NODE_FIELD(aliascolnames);
 	READ_ENUM_FIELD(ctematerialized, CTEMaterialize);
 	READ_NODE_FIELD(ctequery);
-	READ_NODE_FIELD(search_clause);
-	READ_NODE_FIELD(cycle_clause);
 	READ_LOCATION_FIELD(location);
 	READ_BOOL_FIELD(cterecursive);
 	READ_INT_FIELD(cterefcount);
@@ -471,42 +428,6 @@ _readCommonTableExpr(void)
 	READ_NODE_FIELD(ctecoltypes);
 	READ_NODE_FIELD(ctecoltypmods);
 	READ_NODE_FIELD(ctecolcollations);
-
-	READ_DONE();
-}
-
-/*
- * _readMergeWhenClause
- */
-static MergeWhenClause *
-_readMergeWhenClause(void)
-{
-	READ_LOCALS(MergeWhenClause);
-
-	READ_BOOL_FIELD(matched);
-	READ_ENUM_FIELD(commandType, CmdType);
-	READ_ENUM_FIELD(override, OverridingKind);
-	READ_NODE_FIELD(condition);
-	READ_NODE_FIELD(targetList);
-	READ_NODE_FIELD(values);
-
-	READ_DONE();
-}
-
-/*
- * _readMergeAction
- */
-static MergeAction *
-_readMergeAction(void)
-{
-	READ_LOCALS(MergeAction);
-
-	READ_BOOL_FIELD(matched);
-	READ_ENUM_FIELD(commandType, CmdType);
-	READ_ENUM_FIELD(override, OverridingKind);
-	READ_NODE_FIELD(qual);
-	READ_NODE_FIELD(targetList);
-	READ_NODE_FIELD(updateColnos);
 
 	READ_DONE();
 }
@@ -614,7 +535,7 @@ _readVar(void)
 {
 	READ_LOCALS(Var);
 
-	READ_INT_FIELD(varno);
+	READ_UINT_FIELD(varno);
 	READ_INT_FIELD(varattno);
 	READ_OID_FIELD(vartype);
 	READ_INT_FIELD(vartypmod);
@@ -694,8 +615,6 @@ _readAggref(void)
 	READ_CHAR_FIELD(aggkind);
 	READ_UINT_FIELD(agglevelsup);
 	READ_ENUM_FIELD(aggsplit, AggSplit);
-	READ_INT_FIELD(aggno);
-	READ_INT_FIELD(aggtransno);
 	READ_LOCATION_FIELD(location);
 
 	READ_DONE();
@@ -750,7 +669,6 @@ _readSubscriptingRef(void)
 
 	READ_OID_FIELD(refcontainertype);
 	READ_OID_FIELD(refelemtype);
-	READ_OID_FIELD(refrestype);
 	READ_INT_FIELD(reftypmod);
 	READ_OID_FIELD(refcollid);
 	READ_NODE_FIELD(refupperindexpr);
@@ -868,8 +786,6 @@ _readScalarArrayOpExpr(void)
 
 	READ_OID_FIELD(opno);
 	READ_OID_FIELD(opfuncid);
-	READ_OID_FIELD(hashfuncid);
-	READ_OID_FIELD(negfuncid);
 	READ_BOOL_FIELD(useOr);
 	READ_OID_FIELD(inputcollid);
 	READ_NODE_FIELD(args);
@@ -1386,7 +1302,6 @@ _readJoinExpr(void)
 	READ_NODE_FIELD(larg);
 	READ_NODE_FIELD(rarg);
 	READ_NODE_FIELD(usingClause);
-	READ_NODE_FIELD(join_using_alias);
 	READ_NODE_FIELD(quals);
 	READ_NODE_FIELD(alias);
 	READ_INT_FIELD(rtindex);
@@ -1490,7 +1405,6 @@ _readRangeTblEntry(void)
 			READ_NODE_FIELD(joinaliasvars);
 			READ_NODE_FIELD(joinleftcols);
 			READ_NODE_FIELD(joinrightcols);
-			READ_NODE_FIELD(join_using_alias);
 			break;
 		case RTE_FUNCTION:
 			READ_NODE_FIELD(functions);
@@ -1628,6 +1542,7 @@ _readPlannedStmt(void)
 	READ_NODE_FIELD(planTree);
 	READ_NODE_FIELD(rtable);
 	READ_NODE_FIELD(resultRelations);
+	READ_NODE_FIELD(rootResultRelations);
 	READ_NODE_FIELD(appendRelations);
 	READ_NODE_FIELD(subplans);
 	READ_BITMAPSET_FIELD(rewindPlanIDs);
@@ -1657,7 +1572,6 @@ ReadCommonPlan(Plan *local_node)
 	READ_INT_FIELD(plan_width);
 	READ_BOOL_FIELD(parallel_aware);
 	READ_BOOL_FIELD(parallel_safe);
-	READ_BOOL_FIELD(async_capable);
 	READ_INT_FIELD(plan_node_id);
 	READ_NODE_FIELD(targetlist);
 	READ_NODE_FIELD(qual);
@@ -1725,7 +1639,9 @@ _readModifyTable(void)
 	READ_UINT_FIELD(rootRelation);
 	READ_BOOL_FIELD(partColsUpdated);
 	READ_NODE_FIELD(resultRelations);
-	READ_NODE_FIELD(updateColnosLists);
+	READ_INT_FIELD(resultRelIndex);
+	READ_INT_FIELD(rootResultRelIndex);
+	READ_NODE_FIELD(plans);
 	READ_NODE_FIELD(withCheckOptionLists);
 	READ_NODE_FIELD(returningLists);
 	READ_NODE_FIELD(fdwPrivLists);
@@ -1735,11 +1651,9 @@ _readModifyTable(void)
 	READ_ENUM_FIELD(onConflictAction, OnConflictAction);
 	READ_NODE_FIELD(arbiterIndexes);
 	READ_NODE_FIELD(onConflictSet);
-	READ_NODE_FIELD(onConflictCols);
 	READ_NODE_FIELD(onConflictWhere);
 	READ_UINT_FIELD(exclRelRTI);
 	READ_NODE_FIELD(exclRelTlist);
-	READ_NODE_FIELD(mergeActionLists);
 
 	READ_DONE();
 }
@@ -1756,7 +1670,6 @@ _readAppend(void)
 
 	READ_BITMAPSET_FIELD(apprelids);
 	READ_NODE_FIELD(appendplans);
-	READ_INT_FIELD(nasyncplans);
 	READ_INT_FIELD(first_partial_plan);
 	READ_NODE_FIELD(part_prune_info);
 
@@ -1871,7 +1784,7 @@ _readSeqScan(void)
 {
 	READ_LOCALS_NO_FIELDS(SeqScan);
 
-	ReadCommonScan(&local_node->scan);
+	ReadCommonScan(local_node);
 
 	READ_DONE();
 }
@@ -1981,21 +1894,6 @@ _readTidScan(void)
 }
 
 /*
- * _readTidRangeScan
- */
-static TidRangeScan *
-_readTidRangeScan(void)
-{
-	READ_LOCALS(TidRangeScan);
-
-	ReadCommonScan(&local_node->scan);
-
-	READ_NODE_FIELD(tidrangequals);
-
-	READ_DONE();
-}
-
-/*
  * _readSubqueryScan
  */
 static SubqueryScan *
@@ -2006,7 +1904,6 @@ _readSubqueryScan(void)
 	ReadCommonScan(&local_node->scan);
 
 	READ_NODE_FIELD(subplan);
-	READ_ENUM_FIELD(scanstatus, SubqueryScanStatus);
 
 	READ_DONE();
 }
@@ -2114,7 +2011,6 @@ _readForeignScan(void)
 	ReadCommonScan(&local_node->scan);
 
 	READ_ENUM_FIELD(operation, CmdType);
-	READ_UINT_FIELD(resultRelation);
 	READ_OID_FIELD(fs_server);
 	READ_NODE_FIELD(fdw_exprs);
 	READ_NODE_FIELD(fdw_private);
@@ -2256,28 +2152,6 @@ _readMaterial(void)
 }
 
 /*
- * _readMemoize
- */
-static Memoize *
-_readMemoize(void)
-{
-	READ_LOCALS(Memoize);
-
-	ReadCommonPlan(&local_node->plan);
-
-	READ_INT_FIELD(numKeys);
-	READ_OID_ARRAY(hashOperators, local_node->numKeys);
-	READ_OID_ARRAY(collations, local_node->numKeys);
-	READ_NODE_FIELD(param_exprs);
-	READ_BOOL_FIELD(singlerow);
-	READ_BOOL_FIELD(binary_mode);
-	READ_UINT_FIELD(est_entries);
-	READ_BITMAPSET_FIELD(keyparamids);
-
-	READ_DONE();
-}
-
-/*
  * ReadCommonSort
  *	Assign the basic stuff of all nodes that inherit from Sort
  */
@@ -2388,14 +2262,11 @@ _readWindowAgg(void)
 	READ_INT_FIELD(frameOptions);
 	READ_NODE_FIELD(startOffset);
 	READ_NODE_FIELD(endOffset);
-	READ_NODE_FIELD(runCondition);
-	READ_NODE_FIELD(runConditionOrig);
 	READ_OID_FIELD(startInRangeFunc);
 	READ_OID_FIELD(endInRangeFunc);
 	READ_OID_FIELD(inRangeColl);
 	READ_BOOL_FIELD(inRangeAsc);
 	READ_BOOL_FIELD(inRangeNullsFirst);
-	READ_BOOL_FIELD(topWindow);
 
 	READ_DONE();
 }
@@ -2782,16 +2653,8 @@ parseNodeString(void)
 		return_value = _readWindowClause();
 	else if (MATCH("ROWMARKCLAUSE", 13))
 		return_value = _readRowMarkClause();
-	else if (MATCH("CTESEARCHCLAUSE", 15))
-		return_value = _readCTESearchClause();
-	else if (MATCH("CTECYCLECLAUSE", 14))
-		return_value = _readCTECycleClause();
 	else if (MATCH("COMMONTABLEEXPR", 15))
 		return_value = _readCommonTableExpr();
-	else if (MATCH("MERGEWHENCLAUSE", 15))
-		return_value = _readMergeWhenClause();
-	else if (MATCH("MERGEACTION", 11))
-		return_value = _readMergeAction();
 	else if (MATCH("SETOPERATIONSTMT", 16))
 		return_value = _readSetOperationStmt();
 	else if (MATCH("ALIAS", 5))
@@ -2844,23 +2707,23 @@ parseNodeString(void)
 		return_value = _readArrayCoerceExpr();
 	else if (MATCH("CONVERTROWTYPEEXPR", 18))
 		return_value = _readConvertRowtypeExpr();
-	else if (MATCH("COLLATEEXPR", 11))
+	else if (MATCH("COLLATE", 7))
 		return_value = _readCollateExpr();
-	else if (MATCH("CASEEXPR", 8))
+	else if (MATCH("CASE", 4))
 		return_value = _readCaseExpr();
-	else if (MATCH("CASEWHEN", 8))
+	else if (MATCH("WHEN", 4))
 		return_value = _readCaseWhen();
 	else if (MATCH("CASETESTEXPR", 12))
 		return_value = _readCaseTestExpr();
-	else if (MATCH("ARRAYEXPR", 9))
+	else if (MATCH("ARRAY", 5))
 		return_value = _readArrayExpr();
-	else if (MATCH("ROWEXPR", 7))
+	else if (MATCH("ROW", 3))
 		return_value = _readRowExpr();
-	else if (MATCH("ROWCOMPAREEXPR", 14))
+	else if (MATCH("ROWCOMPARE", 10))
 		return_value = _readRowCompareExpr();
-	else if (MATCH("COALESCEEXPR", 12))
+	else if (MATCH("COALESCE", 8))
 		return_value = _readCoalesceExpr();
-	else if (MATCH("MINMAXEXPR", 10))
+	else if (MATCH("MINMAX", 6))
 		return_value = _readMinMaxExpr();
 	else if (MATCH("SQLVALUEFUNCTION", 16))
 		return_value = _readSQLValueFunction();
@@ -2894,17 +2757,17 @@ parseNodeString(void)
 		return_value = _readOnConflictExpr();
 	else if (MATCH("APPENDRELINFO", 13))
 		return_value = _readAppendRelInfo();
-	else if (MATCH("RANGETBLENTRY", 13))
+	else if (MATCH("RTE", 3))
 		return_value = _readRangeTblEntry();
 	else if (MATCH("RANGETBLFUNCTION", 16))
 		return_value = _readRangeTblFunction();
 	else if (MATCH("TABLESAMPLECLAUSE", 17))
 		return_value = _readTableSampleClause();
-	else if (MATCH("NOTIFYSTMT", 10))
+	else if (MATCH("NOTIFY", 6))
 		return_value = _readNotifyStmt();
 	else if (MATCH("DEFELEM", 7))
 		return_value = _readDefElem();
-	else if (MATCH("DECLARECURSORSTMT", 17))
+	else if (MATCH("DECLARECURSOR", 13))
 		return_value = _readDeclareCursorStmt();
 	else if (MATCH("PLANNEDSTMT", 11))
 		return_value = _readPlannedStmt();
@@ -2942,8 +2805,6 @@ parseNodeString(void)
 		return_value = _readBitmapHeapScan();
 	else if (MATCH("TIDSCAN", 7))
 		return_value = _readTidScan();
-	else if (MATCH("TIDRANGESCAN", 12))
-		return_value = _readTidRangeScan();
 	else if (MATCH("SUBQUERYSCAN", 12))
 		return_value = _readSubqueryScan();
 	else if (MATCH("FUNCTIONSCAN", 12))
@@ -2972,8 +2833,6 @@ parseNodeString(void)
 		return_value = _readHashJoin();
 	else if (MATCH("MATERIAL", 8))
 		return_value = _readMaterial();
-	else if (MATCH("MEMOIZE", 7))
-		return_value = _readMemoize();
 	else if (MATCH("SORT", 4))
 		return_value = _readSort();
 	else if (MATCH("INCREMENTALSORT", 15))

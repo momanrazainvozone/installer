@@ -1,14 +1,13 @@
 /*-------------------------------------------------------------------------
  *
- * dynahash.h
+ * dynahash
  *	  POSTGRES dynahash.h file definitions
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
- * IDENTIFICATION
- *		src/include/utils/dynahash.h
+ * src/include/utils/dynahash.h
  *
  *-------------------------------------------------------------------------
  */

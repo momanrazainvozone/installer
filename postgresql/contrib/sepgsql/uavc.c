@@ -6,7 +6,7 @@
  * access control decisions recently used, and reduce number of kernel
  * invocations to avoid unnecessary performance hit.
  *
- * Copyright (c) 2011-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2011-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -171,7 +171,7 @@ sepgsql_avc_unlabeled(void)
 {
 	if (!avc_unlabeled)
 	{
-		char	   *unlabeled;
+		security_context_t unlabeled;
 
 		if (security_get_initial_context_raw("unlabeled", &unlabeled) < 0)
 			ereport(ERROR,
@@ -216,7 +216,7 @@ sepgsql_avc_compute(const char *scontext, const char *tcontext, uint16 tclass)
 	 * policy is reloaded, validation status shall be kept, so we also cache
 	 * whether the supplied security context was valid, or not.
 	 */
-	if (security_check_context_raw(tcontext) != 0)
+	if (security_check_context_raw((security_context_t) tcontext) != 0)
 		ucontext = sepgsql_avc_unlabeled();
 
 	/*
@@ -399,7 +399,6 @@ sepgsql_avc_check_perms_label(const char *tcontext,
 		sepgsql_get_mode() != SEPGSQL_MODE_INTERNAL)
 	{
 		sepgsql_audit_log(denied != 0,
-						  (sepgsql_getenforce() && !cache->permissive),
 						  cache->scontext,
 						  cache->tcontext_is_valid ?
 						  cache->tcontext : sepgsql_avc_unlabeled(),

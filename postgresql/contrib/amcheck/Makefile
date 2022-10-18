@@ -3,14 +3,13 @@
 MODULE_big	= amcheck
 OBJS = \
 	$(WIN32RES) \
-	verify_heapam.o \
 	verify_nbtree.o
 
 EXTENSION = amcheck
-DATA = amcheck--1.2--1.3.sql amcheck--1.1--1.2.sql amcheck--1.0--1.1.sql amcheck--1.0.sql
+DATA = amcheck--1.1--1.2.sql amcheck--1.0--1.1.sql amcheck--1.0.sql
 PGFILEDESC = "amcheck - function for verifying relation integrity"
 
-REGRESS = check check_btree check_heap
+REGRESS = check check_btree
 
 TAP_TESTS = 1
 

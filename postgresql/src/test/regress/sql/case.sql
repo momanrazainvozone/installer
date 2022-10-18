@@ -78,19 +78,19 @@ SELECT CASE 'a' WHEN 'a' THEN 1 ELSE 2 END;
 -- Examples of targets involving tables
 --
 
-SELECT
+SELECT '' AS "Five",
   CASE
     WHEN i >= 3 THEN i
   END AS ">= 3 or Null"
   FROM CASE_TBL;
 
-SELECT
+SELECT '' AS "Five",
   CASE WHEN i >= 3 THEN (i + i)
        ELSE i
   END AS "Simplest Math"
   FROM CASE_TBL;
 
-SELECT i AS "Value",
+SELECT '' AS "Five", i AS "Value",
   CASE WHEN (i < 0) THEN 'small'
        WHEN (i = 0) THEN 'zero'
        WHEN (i = 1) THEN 'one'
@@ -99,7 +99,7 @@ SELECT i AS "Value",
   END AS "Category"
   FROM CASE_TBL;
 
-SELECT
+SELECT '' AS "Five",
   CASE WHEN ((i < 0) or (i < 0)) THEN 'small'
        WHEN ((i = 0) or (i = 0)) THEN 'zero'
        WHEN ((i = 1) or (i = 1)) THEN 'one'
@@ -129,24 +129,13 @@ SELECT *
   FROM CASE_TBL a, CASE2_TBL b
   WHERE COALESCE(a.f, b.i, b.j) = 2;
 
-SELECT NULLIF(a.i,b.i) AS "NULLIF(a.i,b.i)",
+SELECT '' AS Five, NULLIF(a.i,b.i) AS "NULLIF(a.i,b.i)",
   NULLIF(b.i, 4) AS "NULLIF(b.i,4)"
   FROM CASE_TBL a, CASE2_TBL b;
 
-SELECT *
+SELECT '' AS "Two", *
   FROM CASE_TBL a, CASE2_TBL b
   WHERE COALESCE(f,b.i) = 2;
-
--- Tests for constant subexpression simplification
-
-explain (costs off)
-SELECT * FROM CASE_TBL WHERE NULLIF(1, 2) = 2;
-
-explain (costs off)
-SELECT * FROM CASE_TBL WHERE NULLIF(1, 1) IS NOT NULL;
-
-explain (costs off)
-SELECT * FROM CASE_TBL WHERE NULLIF(1, null) = 2;
 
 --
 -- Examples of updates involving tables

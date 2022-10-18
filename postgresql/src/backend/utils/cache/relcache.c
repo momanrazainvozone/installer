@@ -3,7 +3,7 @@
  * relcache.c
  *	  POSTGRES relation descriptor cache code
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -41,7 +41,6 @@
 #include "access/tupdesc_details.h"
 #include "access/xact.h"
 #include "access/xlog.h"
-#include "catalog/binary_upgrade.h"
 #include "catalog/catalog.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
@@ -67,13 +66,11 @@
 #include "catalog/schemapg.h"
 #include "catalog/storage.h"
 #include "commands/policy.h"
-#include "commands/publicationcmds.h"
 #include "commands/trigger.h"
 #include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "optimizer/optimizer.h"
-#include "pgstat.h"
 #include "rewrite/rewriteDefine.h"
 #include "rewrite/rowsecurity.h"
 #include "storage/lmgr.h"
@@ -93,15 +90,15 @@
 #define RELCACHE_INIT_FILEMAGIC		0x573266	/* version ID value */
 
 /*
- * Whether to bother checking if relation cache memory needs to be freed
- * eagerly.  See also RelationBuildDesc() and pg_config_manual.h.
+ * Default policy for whether to apply RECOVER_RELATION_BUILD_MEMORY:
+ * do so in clobber-cache builds but not otherwise.  This choice can be
+ * overridden at compile time with -DRECOVER_RELATION_BUILD_MEMORY=1 or =0.
  */
-#if defined(RECOVER_RELATION_BUILD_MEMORY) && (RECOVER_RELATION_BUILD_MEMORY != 0)
-#define MAYBE_RECOVER_RELATION_BUILD_MEMORY 1
+#ifndef RECOVER_RELATION_BUILD_MEMORY
+#if defined(CLOBBER_CACHE_ALWAYS) || defined(CLOBBER_CACHE_RECURSIVELY)
+#define RECOVER_RELATION_BUILD_MEMORY 1
 #else
 #define RECOVER_RELATION_BUILD_MEMORY 0
-#ifdef DISCARD_CACHES_ENABLED
-#define MAYBE_RECOVER_RELATION_BUILD_MEMORY 1
 #endif
 #endif
 
@@ -302,8 +299,7 @@ static void RelationInitPhysicalAddr(Relation relation);
 static void load_critical_index(Oid indexoid, Oid heapoid);
 static TupleDesc GetPgClassDescriptor(void);
 static TupleDesc GetPgIndexDescriptor(void);
-static void AttrDefaultFetch(Relation relation, int ndef);
-static int	AttrDefaultCmp(const void *a, const void *b);
+static void AttrDefaultFetch(Relation relation);
 static void CheckConstraintFetch(Relation relation);
 static int	CheckConstraintCmp(const void *a, const void *b);
 static void InitIndexAmRoutine(Relation relation);
@@ -524,16 +520,16 @@ RelationBuildTupleDesc(Relation relation)
 	ScanKeyData skey[2];
 	int			need;
 	TupleConstr *constr;
+	AttrDefault *attrdef = NULL;
 	AttrMissing *attrmiss = NULL;
 	int			ndef = 0;
 
-	/* fill rd_att's type ID fields (compare heap.c's AddNewRelationTuple) */
-	relation->rd_att->tdtypeid =
-		relation->rd_rel->reltype ? relation->rd_rel->reltype : RECORDOID;
-	relation->rd_att->tdtypmod = -1;	/* just to be sure */
+	/* copy some fields from pg_class row to rd_att */
+	relation->rd_att->tdtypeid = relation->rd_rel->reltype;
+	relation->rd_att->tdtypmod = -1;	/* unnecessary, but... */
 
-	constr = (TupleConstr *) MemoryContextAllocZero(CacheMemoryContext,
-													sizeof(TupleConstr));
+	constr = (TupleConstr *) MemoryContextAlloc(CacheMemoryContext,
+												sizeof(TupleConstr));
 	constr->has_not_null = false;
 	constr->has_generated_stored = false;
 
@@ -572,28 +568,58 @@ RelationBuildTupleDesc(Relation relation)
 	{
 		Form_pg_attribute attp;
 		int			attnum;
+		bool        atthasmissing;
 
 		attp = (Form_pg_attribute) GETSTRUCT(pg_attribute_tuple);
 
 		attnum = attp->attnum;
 		if (attnum <= 0 || attnum > RelationGetNumberOfAttributes(relation))
-			elog(ERROR, "invalid attribute number %d for relation \"%s\"",
+			elog(ERROR, "invalid attribute number %d for %s",
 				 attp->attnum, RelationGetRelationName(relation));
+
 
 		memcpy(TupleDescAttr(relation->rd_att, attnum - 1),
 			   attp,
 			   ATTRIBUTE_FIXED_PART_SIZE);
+
+		/*
+		 * Fix atthasmissing flag - it's only for plain tables. Others
+		 * should not have missing values set, but there may be some left from
+		 * before when we placed that check, so this code defensively ignores
+		 * such values.
+		 */
+		atthasmissing = attp->atthasmissing;
+		if (relation->rd_rel->relkind != RELKIND_RELATION && atthasmissing)
+		{
+			Form_pg_attribute nattp;
+
+			atthasmissing = false;
+			nattp = TupleDescAttr(relation->rd_att, attnum - 1);
+			nattp->atthasmissing = false;
+		}
 
 		/* Update constraint/default info */
 		if (attp->attnotnull)
 			constr->has_not_null = true;
 		if (attp->attgenerated == ATTRIBUTE_GENERATED_STORED)
 			constr->has_generated_stored = true;
-		if (attp->atthasdef)
-			ndef++;
 
-		/* If the column has a "missing" value, put it in the attrmiss array */
-		if (attp->atthasmissing)
+		/* If the column has a default, fill it into the attrdef array */
+		if (attp->atthasdef)
+		{
+			if (attrdef == NULL)
+				attrdef = (AttrDefault *)
+					MemoryContextAllocZero(CacheMemoryContext,
+										   RelationGetNumberOfAttributes(relation) *
+										   sizeof(AttrDefault));
+			attrdef[ndef].adnum = attnum;
+			attrdef[ndef].adbin = NULL;
+
+			ndef++;
+		}
+
+		/* Likewise for a missing value */
+		if (atthasmissing)
 		{
 			Datum		missingval;
 			bool		missingNull;
@@ -655,7 +681,7 @@ RelationBuildTupleDesc(Relation relation)
 	table_close(pg_attribute_desc, AccessShareLock);
 
 	if (need != 0)
-		elog(ERROR, "pg_attribute catalog is missing %d attribute(s) for relation OID %u",
+		elog(ERROR, "catalog is missing %d attribute(s) for relid %u",
 			 need, RelationGetRelid(relation));
 
 	/*
@@ -687,19 +713,33 @@ RelationBuildTupleDesc(Relation relation)
 		constr->has_generated_stored ||
 		ndef > 0 ||
 		attrmiss ||
-		relation->rd_rel->relchecks > 0)
+		relation->rd_rel->relchecks)
 	{
 		relation->rd_att->constr = constr;
 
 		if (ndef > 0)			/* DEFAULTs */
-			AttrDefaultFetch(relation, ndef);
+		{
+			if (ndef < RelationGetNumberOfAttributes(relation))
+				constr->defval = (AttrDefault *)
+					repalloc(attrdef, ndef * sizeof(AttrDefault));
+			else
+				constr->defval = attrdef;
+			constr->num_defval = ndef;
+			AttrDefaultFetch(relation);
+		}
 		else
 			constr->num_defval = 0;
 
 		constr->missing = attrmiss;
 
 		if (relation->rd_rel->relchecks > 0)	/* CHECKs */
+		{
+			constr->num_check = relation->rd_rel->relchecks;
+			constr->check = (ConstrCheck *)
+				MemoryContextAllocZero(CacheMemoryContext,
+									   constr->num_check * sizeof(ConstrCheck));
 			CheckConstraintFetch(relation);
+		}
 		else
 			constr->num_check = 0;
 	}
@@ -724,8 +764,6 @@ RelationBuildTupleDesc(Relation relation)
  * entry, because that keeps the update logic in RelationClearRelation()
  * manageable.  The other subsidiary data structures are simple enough
  * to be easy to free explicitly, anyway.
- *
- * Note: The relation's reloptions must have been extracted first.
  */
 static void
 RelationBuildRuleLock(Relation relation)
@@ -791,7 +829,6 @@ RelationBuildRuleLock(Relation relation)
 		Datum		rule_datum;
 		char	   *rule_str;
 		RewriteRule *rule;
-		Oid			check_as_user;
 
 		rule = (RewriteRule *) MemoryContextAlloc(rulescxt,
 												  sizeof(RewriteRule));
@@ -831,23 +868,10 @@ RelationBuildRuleLock(Relation relation)
 		pfree(rule_str);
 
 		/*
-		 * If this is a SELECT rule defining a view, and the view has
-		 * "security_invoker" set, we must perform all permissions checks on
-		 * relations referred to by the rule as the invoking user.
-		 *
-		 * In all other cases (including non-SELECT rules on security invoker
-		 * views), perform the permissions checks as the relation owner.
-		 */
-		if (rule->event == CMD_SELECT &&
-			relation->rd_rel->relkind == RELKIND_VIEW &&
-			RelationHasSecurityInvoker(relation))
-			check_as_user = InvalidOid;
-		else
-			check_as_user = relation->rd_rel->relowner;
-
-		/*
-		 * Scan through the rule's actions and set the checkAsUser field on
-		 * all rtable entries. We have to look at the qual as well, in case it
+		 * We want the rule's table references to be checked as though by the
+		 * table owner, not the user referencing the rule.  Therefore, scan
+		 * through the rule's actions and set the checkAsUser field on all
+		 * rtable entries.  We have to look at the qual as well, in case it
 		 * contains sublinks.
 		 *
 		 * The reason for doing this when the rule is loaded, rather than when
@@ -856,8 +880,8 @@ RelationBuildRuleLock(Relation relation)
 		 * the rule tree during load is relatively cheap (compared to
 		 * constructing it in the first place), so we do it here.
 		 */
-		setRuleCheckAsUser((Node *) rule->actions, check_as_user);
-		setRuleCheckAsUser(rule->qual, check_as_user);
+		setRuleCheckAsUser((Node *) rule->actions, relation->rd_rel->relowner);
+		setRuleCheckAsUser(rule->qual, relation->rd_rel->relowner);
 
 		if (numlocks >= maxlocks)
 		{
@@ -1049,26 +1073,20 @@ RelationBuildDesc(Oid targetRelId, bool insertIt)
 	 * data, reasoning that the caller's context is at worst of transaction
 	 * scope, and relcache loads shouldn't happen so often that it's essential
 	 * to recover transient data before end of statement/transaction.  However
-	 * that's definitely not true when debug_discard_caches is active, and
-	 * perhaps it's not true in other cases.
-	 *
-	 * When debug_discard_caches is active or when forced to by
-	 * RECOVER_RELATION_BUILD_MEMORY=1, arrange to allocate the junk in a
-	 * temporary context that we'll free before returning.  Make it a child of
-	 * caller's context so that it will get cleaned up appropriately if we
-	 * error out partway through.
+	 * that's definitely not true in clobber-cache test builds, and perhaps
+	 * it's not true in other cases.  If RECOVER_RELATION_BUILD_MEMORY is not
+	 * zero, arrange to allocate the junk in a temporary context that we'll
+	 * free before returning.  Make it a child of caller's context so that it
+	 * will get cleaned up appropriately if we error out partway through.
 	 */
-#ifdef MAYBE_RECOVER_RELATION_BUILD_MEMORY
-	MemoryContext tmpcxt = NULL;
-	MemoryContext oldcxt = NULL;
+#if RECOVER_RELATION_BUILD_MEMORY
+	MemoryContext tmpcxt;
+	MemoryContext oldcxt;
 
-	if (RECOVER_RELATION_BUILD_MEMORY || debug_discard_caches > 0)
-	{
-		tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
-									   "RelationBuildDesc workspace",
-									   ALLOCSET_DEFAULT_SIZES);
-		oldcxt = MemoryContextSwitchTo(tmpcxt);
-	}
+	tmpcxt = AllocSetContextCreate(CurrentMemoryContext,
+								   "RelationBuildDesc workspace",
+								   ALLOCSET_DEFAULT_SIZES);
+	oldcxt = MemoryContextSwitchTo(tmpcxt);
 #endif
 
 	/* Register to catch invalidation messages */
@@ -1096,13 +1114,10 @@ retry:
 	 */
 	if (!HeapTupleIsValid(pg_class_tuple))
 	{
-#ifdef MAYBE_RECOVER_RELATION_BUILD_MEMORY
-		if (tmpcxt)
-		{
-			/* Return to caller's context, and blow away the temporary context */
-			MemoryContextSwitchTo(oldcxt);
-			MemoryContextDelete(tmpcxt);
-		}
+#if RECOVER_RELATION_BUILD_MEMORY
+		/* Return to caller's context, and blow away the temporary context */
+		MemoryContextSwitchTo(oldcxt);
+		MemoryContextDelete(tmpcxt);
 #endif
 		Assert(in_progress_offset + 1 == in_progress_list_len);
 		in_progress_list_len--;
@@ -1182,42 +1197,8 @@ retry:
 	 */
 	RelationBuildTupleDesc(relation);
 
-	/* foreign key data is not loaded till asked for */
-	relation->rd_fkeylist = NIL;
-	relation->rd_fkeyvalid = false;
-
-	/* partitioning data is not loaded till asked for */
-	relation->rd_partkey = NULL;
-	relation->rd_partkeycxt = NULL;
-	relation->rd_partdesc = NULL;
-	relation->rd_partdesc_nodetached = NULL;
-	relation->rd_partdesc_nodetached_xmin = InvalidTransactionId;
-	relation->rd_pdcxt = NULL;
-	relation->rd_pddcxt = NULL;
-	relation->rd_partcheck = NIL;
-	relation->rd_partcheckvalid = false;
-	relation->rd_partcheckcxt = NULL;
-
 	/*
-	 * initialize access method information
-	 */
-	if (relation->rd_rel->relkind == RELKIND_INDEX ||
-		relation->rd_rel->relkind == RELKIND_PARTITIONED_INDEX)
-		RelationInitIndexAccessInfo(relation);
-	else if (RELKIND_HAS_TABLE_AM(relation->rd_rel->relkind) ||
-			 relation->rd_rel->relkind == RELKIND_SEQUENCE)
-		RelationInitTableAccessMethod(relation);
-	else
-		Assert(relation->rd_rel->relam == InvalidOid);
-
-	/* extract reloptions if any */
-	RelationParseRelOptions(relation, pg_class_tuple);
-
-	/*
-	 * Fetch rules and triggers that affect this relation.
-	 *
-	 * Note that RelationBuildRuleLock() relies on this being done after
-	 * extracting the relation's reloptions.
+	 * Fetch rules and triggers that affect this relation
 	 */
 	if (relation->rd_rel->relhasrules)
 		RelationBuildRuleLock(relation);
@@ -1236,6 +1217,50 @@ retry:
 		RelationBuildRowSecurity(relation);
 	else
 		relation->rd_rsdesc = NULL;
+
+	/* foreign key data is not loaded till asked for */
+	relation->rd_fkeylist = NIL;
+	relation->rd_fkeyvalid = false;
+
+	/* partitioning data is not loaded till asked for */
+	relation->rd_partkey = NULL;
+	relation->rd_partkeycxt = NULL;
+	relation->rd_partdesc = NULL;
+	relation->rd_pdcxt = NULL;
+	relation->rd_partcheck = NIL;
+	relation->rd_partcheckvalid = false;
+	relation->rd_partcheckcxt = NULL;
+
+	/*
+	 * initialize access method information
+	 */
+	switch (relation->rd_rel->relkind)
+	{
+		case RELKIND_INDEX:
+		case RELKIND_PARTITIONED_INDEX:
+			Assert(relation->rd_rel->relam != InvalidOid);
+			RelationInitIndexAccessInfo(relation);
+			break;
+		case RELKIND_RELATION:
+		case RELKIND_TOASTVALUE:
+		case RELKIND_MATVIEW:
+			Assert(relation->rd_rel->relam != InvalidOid);
+			RelationInitTableAccessMethod(relation);
+			break;
+		case RELKIND_SEQUENCE:
+			Assert(relation->rd_rel->relam == InvalidOid);
+			RelationInitTableAccessMethod(relation);
+			break;
+		case RELKIND_VIEW:
+		case RELKIND_COMPOSITE_TYPE:
+		case RELKIND_FOREIGN_TABLE:
+		case RELKIND_PARTITIONED_TABLE:
+			Assert(relation->rd_rel->relam == InvalidOid);
+			break;
+	}
+
+	/* extract reloptions if any */
+	RelationParseRelOptions(relation, pg_class_tuple);
 
 	/*
 	 * initialize the relation lock manager information
@@ -1288,13 +1313,10 @@ retry:
 	/* It's fully valid */
 	relation->rd_isvalid = true;
 
-#ifdef MAYBE_RECOVER_RELATION_BUILD_MEMORY
-	if (tmpcxt)
-	{
-		/* Return to caller's context, and blow away the temporary context */
-		MemoryContextSwitchTo(oldcxt);
-		MemoryContextDelete(tmpcxt);
-	}
+#if RECOVER_RELATION_BUILD_MEMORY
+	/* Return to caller's context, and blow away the temporary context */
+	MemoryContextSwitchTo(oldcxt);
+	MemoryContextDelete(tmpcxt);
 #endif
 
 	return relation;
@@ -1450,7 +1472,6 @@ RelationInitIndexAccessInfo(Relation relation)
 	/*
 	 * Look up the index's access method, save the OID of its handler function
 	 */
-	Assert(relation->rd_rel->relam != InvalidOid);
 	tuple = SearchSysCache1(AMOID, ObjectIdGetDatum(relation->rd_rel->relam));
 	if (!HeapTupleIsValid(tuple))
 		elog(ERROR, "cache lookup failed for access method %u",
@@ -1656,6 +1677,7 @@ LookupOpclassInfo(Oid operatorClassOid,
 		if (!CacheMemoryContext)
 			CreateCacheMemoryContext();
 
+		MemSet(&ctl, 0, sizeof(ctl));
 		ctl.keysize = sizeof(Oid);
 		ctl.entrysize = sizeof(OpClassCacheEnt);
 		OpClassCache = hash_create("Operator class cache", 64,
@@ -1685,11 +1707,10 @@ LookupOpclassInfo(Oid operatorClassOid,
 	 * otherwise.  However it can be helpful for detecting bugs in the cache
 	 * loading logic itself, such as reliance on a non-nailed index.  Given
 	 * the limited use-case and the fact that this adds a great deal of
-	 * expense, we enable it only for high values of debug_discard_caches.
+	 * expense, we enable it only in CLOBBER_CACHE_RECURSIVELY mode.
 	 */
-#ifdef DISCARD_CACHES_ENABLED
-	if (debug_discard_caches > 2)
-		opcentry->valid = false;
+#if defined(CLOBBER_CACHE_RECURSIVELY)
+	opcentry->valid = false;
 #endif
 
 	if (opcentry->valid)
@@ -1810,8 +1831,7 @@ RelationInitTableAccessMethod(Relation relation)
 		 * seem prudent to show that in the catalog. So just overwrite it
 		 * here.
 		 */
-		Assert(relation->rd_rel->relam == InvalidOid);
-		relation->rd_amhandler = F_HEAP_TABLEAM_HANDLER;
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
 	}
 	else if (IsCatalogRelation(relation))
 	{
@@ -1819,7 +1839,7 @@ RelationInitTableAccessMethod(Relation relation)
 		 * Avoid doing a syscache lookup for catalog tables.
 		 */
 		Assert(relation->rd_rel->relam == HEAP_TABLE_AM_OID);
-		relation->rd_amhandler = F_HEAP_TABLEAM_HANDLER;
+		relation->rd_amhandler = HEAP_TABLE_AM_HANDLER_OID;
 	}
 	else
 	{
@@ -1927,7 +1947,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 
 	relation->rd_rel->relreplident = REPLICA_IDENTITY_NOTHING;
 	relation->rd_rel->relpages = 0;
-	relation->rd_rel->reltuples = -1;
+	relation->rd_rel->reltuples = 0;
 	relation->rd_rel->relallvisible = 0;
 	relation->rd_rel->relkind = RELKIND_RELATION;
 	relation->rd_rel->relnatts = (int16) natts;
@@ -1944,7 +1964,7 @@ formrdesc(const char *relationName, Oid relationReltype,
 	relation->rd_att->tdrefcount = 1;	/* mark as refcounted */
 
 	relation->rd_att->tdtypeid = relationReltype;
-	relation->rd_att->tdtypmod = -1;	/* just to be sure */
+	relation->rd_att->tdtypmod = -1;	/* unnecessary, but... */
 
 	/*
 	 * initialize tuple desc info
@@ -2167,16 +2187,10 @@ RelationClose(Relation relation)
 	 * stale partition descriptors it has.  This is unlikely, so check to see
 	 * if there are child contexts before expending a call to mcxt.c.
 	 */
-	if (RelationHasReferenceCountZero(relation))
-	{
-		if (relation->rd_pdcxt != NULL &&
-			relation->rd_pdcxt->firstchild != NULL)
-			MemoryContextDeleteChildren(relation->rd_pdcxt);
-
-		if (relation->rd_pddcxt != NULL &&
-			relation->rd_pddcxt->firstchild != NULL)
-			MemoryContextDeleteChildren(relation->rd_pddcxt);
-	}
+	if (RelationHasReferenceCountZero(relation) &&
+		relation->rd_pdcxt != NULL &&
+		relation->rd_pdcxt->firstchild != NULL)
+		MemoryContextDeleteChildren(relation->rd_pdcxt);
 
 #ifdef RELCACHE_FORCE_RELEASE
 	if (RelationHasReferenceCountZero(relation) &&
@@ -2296,7 +2310,6 @@ RelationReloadIndexInfo(Relation relation)
 		 * the array fields are allowed to change, though.
 		 */
 		relation->rd_index->indisunique = index->indisunique;
-		relation->rd_index->indnullsnotdistinct = index->indnullsnotdistinct;
 		relation->rd_index->indisprimary = index->indisprimary;
 		relation->rd_index->indisexclusion = index->indisexclusion;
 		relation->rd_index->indimmediate = index->indimmediate;
@@ -2410,9 +2423,6 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	 */
 	RelationCloseSmgr(relation);
 
-	/* break mutual link with stats entry */
-	pgstat_unlink_relation(relation);
-
 	/*
 	 * Free all the subsidiary data structures of the relcache entry, then the
 	 * entry itself.
@@ -2444,8 +2454,8 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 	bms_free(relation->rd_keyattr);
 	bms_free(relation->rd_pkattr);
 	bms_free(relation->rd_idattr);
-	if (relation->rd_pubdesc)
-		pfree(relation->rd_pubdesc);
+	if (relation->rd_pubactions)
+		pfree(relation->rd_pubactions);
 	if (relation->rd_options)
 		pfree(relation->rd_options);
 	if (relation->rd_indextuple)
@@ -2464,8 +2474,6 @@ RelationDestroyRelation(Relation relation, bool remember_tupdesc)
 		MemoryContextDelete(relation->rd_partkeycxt);
 	if (relation->rd_pdcxt)
 		MemoryContextDelete(relation->rd_pdcxt);
-	if (relation->rd_pddcxt)
-		MemoryContextDelete(relation->rd_pddcxt);
 	if (relation->rd_partcheckcxt)
 		MemoryContextDelete(relation->rd_partcheckcxt);
 	pfree(relation);
@@ -2720,16 +2728,15 @@ RelationClearRelation(Relation relation, bool rebuild)
 			SWAPFIELD(RowSecurityDesc *, rd_rsdesc);
 		/* toast OID override must be preserved */
 		SWAPFIELD(Oid, rd_toastoid);
-		/* pgstat_info / enabled must be preserved */
+		/* pgstat_info must be preserved */
 		SWAPFIELD(struct PgStat_TableStatus *, pgstat_info);
-		SWAPFIELD(bool, pgstat_enabled);
 		/* preserve old partition key if we have one */
 		if (keep_partkey)
 		{
 			SWAPFIELD(PartitionKey, rd_partkey);
 			SWAPFIELD(MemoryContext, rd_partkeycxt);
 		}
-		if (newrel->rd_pdcxt != NULL || newrel->rd_pddcxt != NULL)
+		if (newrel->rd_pdcxt != NULL)
 		{
 			/*
 			 * We are rebuilding a partitioned relation with a non-zero
@@ -2757,22 +2764,13 @@ RelationClearRelation(Relation relation, bool rebuild)
 			 * newrel.
 			 */
 			relation->rd_partdesc = NULL;	/* ensure rd_partdesc is invalid */
-			relation->rd_partdesc_nodetached = NULL;
-			relation->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 			if (relation->rd_pdcxt != NULL) /* probably never happens */
 				MemoryContextSetParent(newrel->rd_pdcxt, relation->rd_pdcxt);
 			else
 				relation->rd_pdcxt = newrel->rd_pdcxt;
-			if (relation->rd_pddcxt != NULL)
-				MemoryContextSetParent(newrel->rd_pddcxt, relation->rd_pddcxt);
-			else
-				relation->rd_pddcxt = newrel->rd_pddcxt;
 			/* drop newrel's pointers so we don't destroy it below */
 			newrel->rd_partdesc = NULL;
-			newrel->rd_partdesc_nodetached = NULL;
-			newrel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 			newrel->rd_pdcxt = NULL;
-			newrel->rd_pddcxt = NULL;
 		}
 
 #undef SWAPFIELD
@@ -3076,7 +3074,7 @@ static void
 AssertPendingSyncConsistency(Relation relation)
 {
 	bool		relcache_verdict =
-	RelationIsPermanent(relation) &&
+	relation->rd_rel->relpersistence == RELPERSISTENCE_PERMANENT &&
 	((relation->rd_createSubid != InvalidSubTransactionId &&
 	  RELKIND_HAS_STORAGE(relation->rd_rel->relkind)) ||
 	 relation->rd_firstRelfilenodeSubid != InvalidSubTransactionId);
@@ -3651,7 +3649,10 @@ RelationBuildLocalRelation(const char *relname,
 	 */
 	MemoryContextSwitchTo(oldcxt);
 
-	if (RELKIND_HAS_TABLE_AM(relkind) || relkind == RELKIND_SEQUENCE)
+	if (relkind == RELKIND_RELATION ||
+		relkind == RELKIND_SEQUENCE ||
+		relkind == RELKIND_TOASTVALUE ||
+		relkind == RELKIND_MATVIEW)
 		RelationInitTableAccessMethod(rel);
 
 	/*
@@ -3708,36 +3709,9 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	TransactionId freezeXid = InvalidTransactionId;
 	RelFileNode newrnode;
 
-	if (!IsBinaryUpgrade)
-	{
-		/* Allocate a new relfilenode */
-		newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace,
-										   NULL, persistence);
-	}
-	else if (relation->rd_rel->relkind == RELKIND_INDEX)
-	{
-		if (!OidIsValid(binary_upgrade_next_index_pg_class_relfilenode))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("index relfilenode value not set when in binary upgrade mode")));
-
-		newrelfilenode = binary_upgrade_next_index_pg_class_relfilenode;
-		binary_upgrade_next_index_pg_class_relfilenode = InvalidOid;
-	}
-	else if (relation->rd_rel->relkind == RELKIND_RELATION)
-	{
-		if (!OidIsValid(binary_upgrade_next_heap_pg_class_relfilenode))
-			ereport(ERROR,
-					(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-					 errmsg("heap relfilenode value not set when in binary upgrade mode")));
-
-		newrelfilenode = binary_upgrade_next_heap_pg_class_relfilenode;
-		binary_upgrade_next_heap_pg_class_relfilenode = InvalidOid;
-	}
-	else
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-				 errmsg("unexpected request for new relfilenode in binary upgrade mode")));
+	/* Allocate a new relfilenode */
+	newrelfilenode = GetNewRelFileNode(relation->rd_rel->reltablespace, NULL,
+									   persistence);
 
 	/*
 	 * Get a writable copy of the pg_class tuple for the given relation.
@@ -3752,37 +3726,9 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	classform = (Form_pg_class) GETSTRUCT(tuple);
 
 	/*
-	 * Schedule unlinking of the old storage at transaction commit, except
-	 * when performing a binary upgrade, when we must do it immediately.
+	 * Schedule unlinking of the old storage at transaction commit.
 	 */
-	if (IsBinaryUpgrade)
-	{
-		SMgrRelation	srel;
-
-		/*
-		 * During a binary upgrade, we use this code path to ensure that
-		 * pg_largeobject and its index have the same relfilenode values as in
-		 * the old cluster. This is necessary because pg_upgrade treats
-		 * pg_largeobject like a user table, not a system table. It is however
-		 * possible that a table or index may need to end up with the same
-		 * relfilenode in the new cluster as what it had in the old cluster.
-		 * Hence, we can't wait until commit time to remove the old storage.
-		 *
-		 * In general, this function needs to have transactional semantics,
-		 * and removing the old storage before commit time surely isn't.
-		 * However, it doesn't really matter, because if a binary upgrade
-		 * fails at this stage, the new cluster will need to be recreated
-		 * anyway.
-		 */
-		srel = smgropen(relation->rd_node, relation->rd_backend);
-		smgrdounlinkall(&srel, 1, false);
-		smgrclose(srel);
-	}
-	else
-	{
-		/* Not a binary upgrade, so just schedule it to happen later. */
-		RelationDropStorage(relation);
-	}
+	RelationDropStorage(relation);
 
 	/*
 	 * Create storage for the main fork of the new relfilenode.  If it's a
@@ -3795,25 +3741,32 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 	newrnode = relation->rd_node;
 	newrnode.relNode = newrelfilenode;
 
-	if (RELKIND_HAS_TABLE_AM(relation->rd_rel->relkind))
+	switch (relation->rd_rel->relkind)
 	{
-		table_relation_set_new_filenode(relation, &newrnode,
-										persistence,
-										&freezeXid, &minmulti);
-	}
-	else if (RELKIND_HAS_STORAGE(relation->rd_rel->relkind))
-	{
-		/* handle these directly, at least for now */
-		SMgrRelation srel;
+		case RELKIND_INDEX:
+		case RELKIND_SEQUENCE:
+			{
+				/* handle these directly, at least for now */
+				SMgrRelation srel;
 
-		srel = RelationCreateStorage(newrnode, persistence, true);
-		smgrclose(srel);
-	}
-	else
-	{
-		/* we shouldn't be called for anything else */
-		elog(ERROR, "relation \"%s\" does not have storage",
-			 RelationGetRelationName(relation));
+				srel = RelationCreateStorage(newrnode, persistence);
+				smgrclose(srel);
+			}
+			break;
+
+		case RELKIND_RELATION:
+		case RELKIND_TOASTVALUE:
+		case RELKIND_MATVIEW:
+			table_relation_set_new_filenode(relation, &newrnode,
+											persistence,
+											&freezeXid, &minmulti);
+			break;
+
+		default:
+			/* we shouldn't be called for anything else */
+			elog(ERROR, "relation \"%s\" does not have storage",
+				 RelationGetRelationName(relation));
+			break;
 	}
 
 	/*
@@ -3861,7 +3814,7 @@ RelationSetNewRelfilenode(Relation relation, char persistence)
 		if (relation->rd_rel->relkind != RELKIND_SEQUENCE)
 		{
 			classform->relpages = 0;	/* it's empty until further notice */
-			classform->reltuples = -1;
+			classform->reltuples = 0;
 			classform->relallvisible = 0;
 		}
 		classform->relfrozenxid = freezeXid;
@@ -3937,6 +3890,7 @@ RelationCacheInitialize(void)
 	/*
 	 * create hashtable that indexes the relcache
 	 */
+	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(Oid);
 	ctl.entrysize = sizeof(RelIdCacheEnt);
 	RelationIdCache = hash_create("Relcache by OID", INITRELCACHESIZE,
@@ -4265,7 +4219,10 @@ RelationCacheInitializePhase3(void)
 
 		/* Reload tableam data if needed */
 		if (relation->rd_tableam == NULL &&
-			(RELKIND_HAS_TABLE_AM(relation->rd_rel->relkind) || relation->rd_rel->relkind == RELKIND_SEQUENCE))
+			(relation->rd_rel->relkind == RELKIND_RELATION ||
+			 relation->rd_rel->relkind == RELKIND_SEQUENCE ||
+			 relation->rd_rel->relkind == RELKIND_TOASTVALUE ||
+			 relation->rd_rel->relkind == RELKIND_MATVIEW))
 		{
 			RelationInitTableAccessMethod(relation);
 			Assert(relation->rd_tableam != NULL);
@@ -4404,29 +4361,21 @@ GetPgIndexDescriptor(void)
 
 /*
  * Load any default attribute value definitions for the relation.
- *
- * ndef is the number of attributes that were marked atthasdef.
- *
- * Note: we don't make it a hard error to be missing some pg_attrdef records.
- * We can limp along as long as nothing needs to use the default value.  Code
- * that fails to find an expected AttrDefault record should throw an error.
  */
 static void
-AttrDefaultFetch(Relation relation, int ndef)
+AttrDefaultFetch(Relation relation)
 {
-	AttrDefault *attrdef;
+	AttrDefault *attrdef = relation->rd_att->constr->defval;
+	int			ndef = relation->rd_att->constr->num_defval;
 	Relation	adrel;
 	SysScanDesc adscan;
 	ScanKeyData skey;
 	HeapTuple	htup;
-	int			found = 0;
+	Datum		val;
+	bool		isnull;
+	int			found;
+	int			i;
 
-	/* Allocate array with room for as many entries as expected */
-	attrdef = (AttrDefault *)
-		MemoryContextAllocZero(CacheMemoryContext,
-							   ndef * sizeof(AttrDefault));
-
-	/* Search pg_attrdef for relevant entries */
 	ScanKeyInit(&skey,
 				Anum_pg_attrdef_adrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -4435,94 +4384,65 @@ AttrDefaultFetch(Relation relation, int ndef)
 	adrel = table_open(AttrDefaultRelationId, AccessShareLock);
 	adscan = systable_beginscan(adrel, AttrDefaultIndexId, true,
 								NULL, 1, &skey);
+	found = 0;
 
 	while (HeapTupleIsValid(htup = systable_getnext(adscan)))
 	{
 		Form_pg_attrdef adform = (Form_pg_attrdef) GETSTRUCT(htup);
-		Datum		val;
-		bool		isnull;
+		Form_pg_attribute attr = TupleDescAttr(relation->rd_att, adform->adnum - 1);
 
-		/* protect limited size of array */
-		if (found >= ndef)
+		for (i = 0; i < ndef; i++)
 		{
-			elog(WARNING, "unexpected pg_attrdef record found for attribute %d of relation \"%s\"",
-				 adform->adnum, RelationGetRelationName(relation));
+			if (adform->adnum != attrdef[i].adnum)
+				continue;
+			if (attrdef[i].adbin != NULL)
+				elog(WARNING, "multiple attrdef records found for attr %s of rel %s",
+					 NameStr(attr->attname),
+					 RelationGetRelationName(relation));
+			else
+				found++;
+
+			val = fastgetattr(htup,
+							  Anum_pg_attrdef_adbin,
+							  adrel->rd_att, &isnull);
+			if (isnull)
+				elog(WARNING, "null adbin for attr %s of rel %s",
+					 NameStr(attr->attname),
+					 RelationGetRelationName(relation));
+			else
+			{
+				/* detoast and convert to cstring in caller's context */
+				char	   *s = TextDatumGetCString(val);
+
+				attrdef[i].adbin = MemoryContextStrdup(CacheMemoryContext, s);
+				pfree(s);
+			}
 			break;
 		}
 
-		val = fastgetattr(htup,
-						  Anum_pg_attrdef_adbin,
-						  adrel->rd_att, &isnull);
-		if (isnull)
-			elog(WARNING, "null adbin for attribute %d of relation \"%s\"",
+		if (i >= ndef)
+			elog(WARNING, "unexpected attrdef record found for attr %d of rel %s",
 				 adform->adnum, RelationGetRelationName(relation));
-		else
-		{
-			/* detoast and convert to cstring in caller's context */
-			char	   *s = TextDatumGetCString(val);
-
-			attrdef[found].adnum = adform->adnum;
-			attrdef[found].adbin = MemoryContextStrdup(CacheMemoryContext, s);
-			pfree(s);
-			found++;
-		}
 	}
 
 	systable_endscan(adscan);
 	table_close(adrel, AccessShareLock);
-
-	if (found != ndef)
-		elog(WARNING, "%d pg_attrdef record(s) missing for relation \"%s\"",
-			 ndef - found, RelationGetRelationName(relation));
-
-	/*
-	 * Sort the AttrDefault entries by adnum, for the convenience of
-	 * equalTupleDescs().  (Usually, they already will be in order, but this
-	 * might not be so if systable_getnext isn't using an index.)
-	 */
-	if (found > 1)
-		qsort(attrdef, found, sizeof(AttrDefault), AttrDefaultCmp);
-
-	/* Install array only after it's fully valid */
-	relation->rd_att->constr->defval = attrdef;
-	relation->rd_att->constr->num_defval = found;
-}
-
-/*
- * qsort comparator to sort AttrDefault entries by adnum
- */
-static int
-AttrDefaultCmp(const void *a, const void *b)
-{
-	const AttrDefault *ada = (const AttrDefault *) a;
-	const AttrDefault *adb = (const AttrDefault *) b;
-
-	return ada->adnum - adb->adnum;
 }
 
 /*
  * Load any check constraints for the relation.
- *
- * As with defaults, if we don't find the expected number of them, just warn
- * here.  The executor should throw an error if an INSERT/UPDATE is attempted.
  */
 static void
 CheckConstraintFetch(Relation relation)
 {
-	ConstrCheck *check;
-	int			ncheck = relation->rd_rel->relchecks;
+	ConstrCheck *check = relation->rd_att->constr->check;
+	int			ncheck = relation->rd_att->constr->num_check;
 	Relation	conrel;
 	SysScanDesc conscan;
 	ScanKeyData skey[1];
 	HeapTuple	htup;
 	int			found = 0;
 
-	/* Allocate array with room for as many entries as expected */
-	check = (ConstrCheck *)
-		MemoryContextAllocZero(CacheMemoryContext,
-							   ncheck * sizeof(ConstrCheck));
-
-	/* Search pg_constraint for relevant entries */
 	ScanKeyInit(&skey[0],
 				Anum_pg_constraint_conrelid,
 				BTEqualStrategyNumber, F_OIDEQ,
@@ -4537,18 +4457,15 @@ CheckConstraintFetch(Relation relation)
 		Form_pg_constraint conform = (Form_pg_constraint) GETSTRUCT(htup);
 		Datum		val;
 		bool		isnull;
+		char	   *s;
 
 		/* We want check constraints only */
 		if (conform->contype != CONSTRAINT_CHECK)
 			continue;
 
-		/* protect limited size of array */
 		if (found >= ncheck)
-		{
-			elog(WARNING, "unexpected pg_constraint record found for relation \"%s\"",
+			elog(ERROR, "unexpected constraint record found for rel %s",
 				 RelationGetRelationName(relation));
-			break;
-		}
 
 		check[found].ccvalid = conform->convalidated;
 		check[found].ccnoinherit = conform->connoinherit;
@@ -4560,36 +4477,27 @@ CheckConstraintFetch(Relation relation)
 						  Anum_pg_constraint_conbin,
 						  conrel->rd_att, &isnull);
 		if (isnull)
-			elog(WARNING, "null conbin for relation \"%s\"",
+			elog(ERROR, "null conbin for rel %s",
 				 RelationGetRelationName(relation));
-		else
-		{
-			/* detoast and convert to cstring in caller's context */
-			char	   *s = TextDatumGetCString(val);
 
-			check[found].ccbin = MemoryContextStrdup(CacheMemoryContext, s);
-			pfree(s);
-			found++;
-		}
+		/* detoast and convert to cstring in caller's context */
+		s = TextDatumGetCString(val);
+		check[found].ccbin = MemoryContextStrdup(CacheMemoryContext, s);
+		pfree(s);
+
+		found++;
 	}
 
 	systable_endscan(conscan);
 	table_close(conrel, AccessShareLock);
 
 	if (found != ncheck)
-		elog(WARNING, "%d pg_constraint record(s) missing for relation \"%s\"",
+		elog(ERROR, "%d constraint record(s) missing for rel %s",
 			 ncheck - found, RelationGetRelationName(relation));
 
-	/*
-	 * Sort the records by name.  This ensures that CHECKs are applied in a
-	 * deterministic order, and it also makes equalTupleDescs() faster.
-	 */
-	if (found > 1)
-		qsort(check, found, sizeof(ConstrCheck), CheckConstraintCmp);
-
-	/* Install array only after it's fully valid */
-	relation->rd_att->constr->check = check;
-	relation->rd_att->constr->num_check = found;
+	/* Sort the records so that CHECKs are applied in a deterministic order */
+	if (ncheck > 1)
+		qsort(check, ncheck, sizeof(ConstrCheck), CheckConstraintCmp);
 }
 
 /*
@@ -4674,7 +4582,7 @@ RelationGetFKeyList(Relation relation)
 								   info->conkey,
 								   info->confkey,
 								   info->conpfeqop,
-								   NULL, NULL, NULL, NULL);
+								   NULL, NULL);
 
 		/* Add FK's node to the result list */
 		result = lappend(result, info);
@@ -5387,86 +5295,6 @@ restart:
 }
 
 /*
- * RelationGetIdentityKeyBitmap -- get a bitmap of replica identity attribute
- * numbers
- *
- * A bitmap of index attribute numbers for the configured replica identity
- * index is returned.
- *
- * See also comments of RelationGetIndexAttrBitmap().
- *
- * This is a special purpose function used during logical replication. Here,
- * unlike RelationGetIndexAttrBitmap(), we don't acquire a lock on the required
- * index as we build the cache entry using a historic snapshot and all the
- * later changes are absorbed while decoding WAL. Due to this reason, we don't
- * need to retry here in case of a change in the set of indexes.
- */
-Bitmapset *
-RelationGetIdentityKeyBitmap(Relation relation)
-{
-	Bitmapset  *idindexattrs = NULL;	/* columns in the replica identity */
-	Relation	indexDesc;
-	int			i;
-	Oid			replidindex;
-	MemoryContext oldcxt;
-
-	/* Quick exit if we already computed the result */
-	if (relation->rd_idattr != NULL)
-		return bms_copy(relation->rd_idattr);
-
-	/* Fast path if definitely no indexes */
-	if (!RelationGetForm(relation)->relhasindex)
-		return NULL;
-
-	/* Historic snapshot must be set. */
-	Assert(HistoricSnapshotActive());
-
-	replidindex = RelationGetReplicaIndex(relation);
-
-	/* Fall out if there is no replica identity index */
-	if (!OidIsValid(replidindex))
-		return NULL;
-
-	/* Look up the description for the replica identity index */
-	indexDesc = RelationIdGetRelation(replidindex);
-
-	if (!RelationIsValid(indexDesc))
-		elog(ERROR, "could not open relation with OID %u",
-			 relation->rd_replidindex);
-
-	/* Add referenced attributes to idindexattrs */
-	for (i = 0; i < indexDesc->rd_index->indnatts; i++)
-	{
-		int			attrnum = indexDesc->rd_index->indkey.values[i];
-
-		/*
-		 * We don't include non-key columns into idindexattrs bitmaps. See
-		 * RelationGetIndexAttrBitmap.
-		 */
-		if (attrnum != 0)
-		{
-			if (i < indexDesc->rd_index->indnkeyatts)
-				idindexattrs = bms_add_member(idindexattrs,
-											  attrnum - FirstLowInvalidHeapAttributeNumber);
-		}
-	}
-
-	RelationClose(indexDesc);
-
-	/* Don't leak the old values of these bitmaps, if any */
-	bms_free(relation->rd_idattr);
-	relation->rd_idattr = NULL;
-
-	/* Now save copy of the bitmap in the relcache entry */
-	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
-	relation->rd_idattr = bms_copy(idindexattrs);
-	MemoryContextSwitchTo(oldcxt);
-
-	/* We return our original working copy for caller to play with */
-	return idindexattrs;
-}
-
-/*
  * RelationGetExclusionInfo -- get info about index's exclusion constraint
  *
  * This should be called only for an index that is known to have an
@@ -5597,61 +5425,34 @@ RelationGetExclusionInfo(Relation indexRelation,
 }
 
 /*
- * Get the publication information for the given relation.
- *
- * Traverse all the publications which the relation is in to get the
- * publication actions and validate the row filter expressions for such
- * publications if any. We consider the row filter expression as invalid if it
- * references any column which is not part of REPLICA IDENTITY.
- *
- * To avoid fetching the publication information repeatedly, we cache the
- * publication actions and row filter validation information.
+ * Get publication actions for the given relation.
  */
-void
-RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
+struct PublicationActions *
+GetRelationPublicationActions(Relation relation)
 {
 	List	   *puboids;
 	ListCell   *lc;
 	MemoryContext oldcxt;
-	Oid			schemaid;
-	List	   *ancestors = NIL;
-	Oid			relid = RelationGetRelid(relation);
+	PublicationActions *pubactions = palloc0(sizeof(PublicationActions));
 
 	/*
 	 * If not publishable, it publishes no actions.  (pgoutput_change() will
 	 * ignore it.)
 	 */
 	if (!is_publishable_relation(relation))
-	{
-		memset(pubdesc, 0, sizeof(PublicationDesc));
-		pubdesc->rf_valid_for_update = true;
-		pubdesc->rf_valid_for_delete = true;
-		pubdesc->cols_valid_for_update = true;
-		pubdesc->cols_valid_for_delete = true;
-		return;
-	}
+		return pubactions;
 
-	if (relation->rd_pubdesc)
-	{
-		memcpy(pubdesc, relation->rd_pubdesc, sizeof(PublicationDesc));
-		return;
-	}
-
-	memset(pubdesc, 0, sizeof(PublicationDesc));
-	pubdesc->rf_valid_for_update = true;
-	pubdesc->rf_valid_for_delete = true;
-	pubdesc->cols_valid_for_update = true;
-	pubdesc->cols_valid_for_delete = true;
+	if (relation->rd_pubactions)
+		return memcpy(pubactions, relation->rd_pubactions,
+					  sizeof(PublicationActions));
 
 	/* Fetch the publication membership info. */
-	puboids = GetRelationPublications(relid);
-	schemaid = RelationGetNamespace(relation);
-	puboids = list_concat_unique_oid(puboids, GetSchemaPublications(schemaid));
-
+	puboids = GetRelationPublications(RelationGetRelid(relation));
 	if (relation->rd_rel->relispartition)
 	{
 		/* Add publications that the ancestors are in too. */
-		ancestors = get_partition_ancestors(relid);
+		List	   *ancestors = get_partition_ancestors(RelationGetRelid(relation));
+		ListCell   *lc;
 
 		foreach(lc, ancestors)
 		{
@@ -5659,9 +5460,6 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 
 			puboids = list_concat_unique_oid(puboids,
 											 GetRelationPublications(ancestor));
-			schemaid = get_rel_namespace(ancestor);
-			puboids = list_concat_unique_oid(puboids,
-											 GetSchemaPublications(schemaid));
 		}
 	}
 	puboids = list_concat_unique_oid(puboids, GetAllTablesPublications());
@@ -5679,80 +5477,35 @@ RelationBuildPublicationDesc(Relation relation, PublicationDesc *pubdesc)
 
 		pubform = (Form_pg_publication) GETSTRUCT(tup);
 
-		pubdesc->pubactions.pubinsert |= pubform->pubinsert;
-		pubdesc->pubactions.pubupdate |= pubform->pubupdate;
-		pubdesc->pubactions.pubdelete |= pubform->pubdelete;
-		pubdesc->pubactions.pubtruncate |= pubform->pubtruncate;
-
-		/*
-		 * Check if all columns referenced in the filter expression are part
-		 * of the REPLICA IDENTITY index or not.
-		 *
-		 * If the publication is FOR ALL TABLES then it means the table has no
-		 * row filters and we can skip the validation.
-		 */
-		if (!pubform->puballtables &&
-			(pubform->pubupdate || pubform->pubdelete) &&
-			pub_rf_contains_invalid_column(pubid, relation, ancestors,
-										   pubform->pubviaroot))
-		{
-			if (pubform->pubupdate)
-				pubdesc->rf_valid_for_update = false;
-			if (pubform->pubdelete)
-				pubdesc->rf_valid_for_delete = false;
-		}
-
-		/*
-		 * Check if all columns are part of the REPLICA IDENTITY index or not.
-		 *
-		 * If the publication is FOR ALL TABLES then it means the table has no
-		 * column list and we can skip the validation.
-		 */
-		if (!pubform->puballtables &&
-			(pubform->pubupdate || pubform->pubdelete) &&
-			pub_collist_contains_invalid_column(pubid, relation, ancestors,
-												pubform->pubviaroot))
-		{
-			if (pubform->pubupdate)
-				pubdesc->cols_valid_for_update = false;
-			if (pubform->pubdelete)
-				pubdesc->cols_valid_for_delete = false;
-		}
+		pubactions->pubinsert |= pubform->pubinsert;
+		pubactions->pubupdate |= pubform->pubupdate;
+		pubactions->pubdelete |= pubform->pubdelete;
+		pubactions->pubtruncate |= pubform->pubtruncate;
 
 		ReleaseSysCache(tup);
 
 		/*
-		 * If we know everything is replicated and the row filter is invalid
-		 * for update and delete, there is no point to check for other
-		 * publications.
+		 * If we know everything is replicated, there is no point to check for
+		 * other publications.
 		 */
-		if (pubdesc->pubactions.pubinsert && pubdesc->pubactions.pubupdate &&
-			pubdesc->pubactions.pubdelete && pubdesc->pubactions.pubtruncate &&
-			!pubdesc->rf_valid_for_update && !pubdesc->rf_valid_for_delete)
-			break;
-
-		/*
-		 * If we know everything is replicated and the column list is invalid
-		 * for update and delete, there is no point to check for other
-		 * publications.
-		 */
-		if (pubdesc->pubactions.pubinsert && pubdesc->pubactions.pubupdate &&
-			pubdesc->pubactions.pubdelete && pubdesc->pubactions.pubtruncate &&
-			!pubdesc->cols_valid_for_update && !pubdesc->cols_valid_for_delete)
+		if (pubactions->pubinsert && pubactions->pubupdate &&
+			pubactions->pubdelete && pubactions->pubtruncate)
 			break;
 	}
 
-	if (relation->rd_pubdesc)
+	if (relation->rd_pubactions)
 	{
-		pfree(relation->rd_pubdesc);
-		relation->rd_pubdesc = NULL;
+		pfree(relation->rd_pubactions);
+		relation->rd_pubactions = NULL;
 	}
 
-	/* Now save copy of the descriptor in the relcache entry. */
+	/* Now save copy of the actions in the relcache entry. */
 	oldcxt = MemoryContextSwitchTo(CacheMemoryContext);
-	relation->rd_pubdesc = palloc(sizeof(PublicationDesc));
-	memcpy(relation->rd_pubdesc, pubdesc, sizeof(PublicationDesc));
+	relation->rd_pubactions = palloc(sizeof(PublicationActions));
+	memcpy(relation->rd_pubactions, pubactions, sizeof(PublicationActions));
 	MemoryContextSwitchTo(oldcxt);
+
+	return pubactions;
 }
 
 /*
@@ -6072,8 +5825,8 @@ load_relcache_init_file(bool shared)
 		rel->rd_att = CreateTemplateTupleDesc(relform->relnatts);
 		rel->rd_att->tdrefcount = 1;	/* mark as refcounted */
 
-		rel->rd_att->tdtypeid = relform->reltype ? relform->reltype : RECORDOID;
-		rel->rd_att->tdtypmod = -1; /* just to be sure */
+		rel->rd_att->tdtypeid = relform->reltype;
+		rel->rd_att->tdtypmod = -1; /* unnecessary, but... */
 
 		/* next read all the attribute tuple form data entries */
 		has_not_null = false;
@@ -6243,7 +5996,10 @@ load_relcache_init_file(bool shared)
 				nailed_rels++;
 
 			/* Load table AM data */
-			if (RELKIND_HAS_TABLE_AM(rel->rd_rel->relkind) || rel->rd_rel->relkind == RELKIND_SEQUENCE)
+			if (rel->rd_rel->relkind == RELKIND_RELATION ||
+				rel->rd_rel->relkind == RELKIND_SEQUENCE ||
+				rel->rd_rel->relkind == RELKIND_TOASTVALUE ||
+				rel->rd_rel->relkind == RELKIND_MATVIEW)
 				RelationInitTableAccessMethod(rel);
 
 			Assert(rel->rd_index == NULL);
@@ -6274,10 +6030,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_partkey = NULL;
 		rel->rd_partkeycxt = NULL;
 		rel->rd_partdesc = NULL;
-		rel->rd_partdesc_nodetached = NULL;
-		rel->rd_partdesc_nodetached_xmin = InvalidTransactionId;
 		rel->rd_pdcxt = NULL;
-		rel->rd_pddcxt = NULL;
 		rel->rd_partcheck = NIL;
 		rel->rd_partcheckvalid = false;
 		rel->rd_partcheckcxt = NULL;
@@ -6304,7 +6057,7 @@ load_relcache_init_file(bool shared)
 		rel->rd_keyattr = NULL;
 		rel->rd_pkattr = NULL;
 		rel->rd_idattr = NULL;
-		rel->rd_pubdesc = NULL;
+		rel->rd_pubactions = NULL;
 		rel->rd_statvalid = false;
 		rel->rd_statlist = NIL;
 		rel->rd_fkeyvalid = false;

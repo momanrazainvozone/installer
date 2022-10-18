@@ -4,7 +4,7 @@
  *	   This file contains index tuple accessor and mutator routines,
  *	   as well as various tuple utilities.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -33,39 +33,20 @@
  * ----------------------------------------------------------------
  */
 
- /* ----------------
-  *		index_form_tuple
-  *
-  *		As index_form_tuple_context, but allocates the returned tuple in the
-  *		CurrentMemoryContext.
-  * ----------------
-  */
-IndexTuple
-index_form_tuple(TupleDesc tupleDescriptor,
-				 Datum *values,
-				 bool *isnull)
-{
-	return index_form_tuple_context(tupleDescriptor, values, isnull,
-									CurrentMemoryContext);
-}
-
 /* ----------------
- *		index_form_tuple_context
+ *		index_form_tuple
  *
  *		This shouldn't leak any memory; otherwise, callers such as
  *		tuplesort_putindextuplevalues() will be very unhappy.
  *
  *		This shouldn't perform external table access provided caller
  *		does not pass values that are stored EXTERNAL.
- *
- *		Allocates returned tuple in provided 'context'.
  * ----------------
  */
 IndexTuple
-index_form_tuple_context(TupleDesc tupleDescriptor,
-						 Datum *values,
-						 bool *isnull,
-						 MemoryContext context)
+index_form_tuple(TupleDesc tupleDescriptor,
+				 Datum *values,
+				 bool *isnull)
 {
 	char	   *tp;				/* tuple pointer */
 	IndexTuple	tuple;			/* return tuple */
@@ -122,10 +103,7 @@ index_form_tuple_context(TupleDesc tupleDescriptor,
 			(att->attstorage == TYPSTORAGE_EXTENDED ||
 			 att->attstorage == TYPSTORAGE_MAIN))
 		{
-			Datum		cvalue;
-
-			cvalue = toast_compress_datum(untoasted_values[i],
-										  att->attcompression);
+			Datum		cvalue = toast_compress_datum(untoasted_values[i]);
 
 			if (DatumGetPointer(cvalue) != NULL)
 			{
@@ -162,7 +140,7 @@ index_form_tuple_context(TupleDesc tupleDescriptor,
 	size = hoff + data_size;
 	size = MAXALIGN(size);		/* be conservative */
 
-	tp = (char *) MemoryContextAllocZero(context, size);
+	tp = (char *) palloc0(size);
 	tuple = (IndexTuple) tp;
 
 	heap_fill_tuple(tupleDescriptor,
@@ -456,37 +434,22 @@ void
 index_deform_tuple(IndexTuple tup, TupleDesc tupleDescriptor,
 				   Datum *values, bool *isnull)
 {
+	int			hasnulls = IndexTupleHasNulls(tup);
+	int			natts = tupleDescriptor->natts; /* number of atts to extract */
+	int			attnum;
 	char	   *tp;				/* ptr to tuple data */
+	int			off;			/* offset in tuple data */
 	bits8	   *bp;				/* ptr to null bitmap in tuple */
+	bool		slow = false;	/* can we use/set attcacheoff? */
+
+	/* Assert to protect callers who allocate fixed-size arrays */
+	Assert(natts <= INDEX_MAX_KEYS);
 
 	/* XXX "knows" t_bits are just after fixed tuple header! */
 	bp = (bits8 *) ((char *) tup + sizeof(IndexTupleData));
 
 	tp = (char *) tup + IndexInfoFindDataOffset(tup->t_info);
-
-	index_deform_tuple_internal(tupleDescriptor, values, isnull,
-								tp, bp, IndexTupleHasNulls(tup));
-}
-
-/*
- * Convert an index tuple into Datum/isnull arrays,
- * without assuming any specific layout of the index tuple header.
- *
- * Caller must supply pointer to data area, pointer to nulls bitmap
- * (which can be NULL if !hasnulls), and hasnulls flag.
- */
-void
-index_deform_tuple_internal(TupleDesc tupleDescriptor,
-							Datum *values, bool *isnull,
-							char *tp, bits8 *bp, int hasnulls)
-{
-	int			natts = tupleDescriptor->natts; /* number of atts to extract */
-	int			attnum;
-	int			off = 0;		/* offset in tuple data */
-	bool		slow = false;	/* can we use/set attcacheoff? */
-
-	/* Assert to protect callers who allocate fixed-size arrays */
-	Assert(natts <= INDEX_MAX_KEYS);
+	off = 0;
 
 	for (attnum = 0; attnum < natts; attnum++)
 	{

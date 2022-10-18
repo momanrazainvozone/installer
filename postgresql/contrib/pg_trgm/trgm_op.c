@@ -100,8 +100,6 @@ _PG_init(void)
 							 NULL,
 							 NULL,
 							 NULL);
-
-	MarkGUCPrefixReserved("pg_trgm");
 }
 
 /*

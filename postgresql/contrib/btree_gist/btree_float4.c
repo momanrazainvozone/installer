@@ -5,7 +5,6 @@
 
 #include "btree_gist.h"
 #include "btree_utils_num.h"
-#include "utils/float.h"
 
 typedef struct float4key
 {
@@ -99,8 +98,7 @@ float4_dist(PG_FUNCTION_ARGS)
 	float4		r;
 
 	r = a - b;
-	if (unlikely(isinf(r)) && !isinf(a) && !isinf(b))
-		float_overflow_error();
+	CHECKFLOATVAL(r, isinf(a) || isinf(b), true);
 
 	PG_RETURN_FLOAT4(Abs(r));
 }
@@ -190,6 +188,7 @@ gbt_float4_penalty(PG_FUNCTION_ARGS)
 	penalty_num(result, origentry->lower, origentry->upper, newentry->lower, newentry->upper);
 
 	PG_RETURN_POINTER(result);
+
 }
 
 Datum

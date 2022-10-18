@@ -3,7 +3,7 @@
  *
  *	dump functions
  *
- *	Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ *	Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *	src/bin/pg_upgrade/dump.c
  */
 
@@ -22,14 +22,13 @@ generate_old_dump(void)
 	/* run new pg_dumpall binary for globals */
 	exec_prog(UTILITY_LOG_FILE, NULL, true, true,
 			  "\"%s/pg_dumpall\" %s --globals-only --quote-all-identifiers "
-			  "--binary-upgrade %s -f \"%s/%s\"",
+			  "--binary-upgrade %s -f %s",
 			  new_cluster.bindir, cluster_conn_opts(&old_cluster),
 			  log_opts.verbose ? "--verbose" : "",
-			  log_opts.dumpdir,
 			  GLOBALS_DUMP_FILE);
 	check_ok();
 
-	prep_status_progress("Creating dump of database schemas");
+	prep_status("Creating dump of database schemas\n");
 
 	/* create per-db dump files */
 	for (dbnum = 0; dbnum < old_cluster.dbarr.ndbs; dbnum++)
@@ -53,10 +52,9 @@ generate_old_dump(void)
 
 		parallel_exec_prog(log_file_name, NULL,
 						   "\"%s/pg_dump\" %s --schema-only --quote-all-identifiers "
-						   "--binary-upgrade --format=custom %s --file=\"%s/%s\" %s",
+						   "--binary-upgrade --format=custom %s --file=\"%s\" %s",
 						   new_cluster.bindir, cluster_conn_opts(&old_cluster),
 						   log_opts.verbose ? "--verbose" : "",
-						   log_opts.dumpdir,
 						   sql_file_name, escaped_connstr.data);
 
 		termPQExpBuffer(&escaped_connstr);

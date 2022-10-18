@@ -3,7 +3,7 @@
  * partitionfuncs.c
  *	  Functions for accessing partition-related metadata
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -45,7 +45,9 @@ check_rel_can_be_partition(Oid relid)
 	relispartition = get_rel_relispartition(relid);
 
 	/* Only allow relation types that can appear in partition trees. */
-	if (!relispartition && !RELKIND_HAS_PARTITIONS(relkind))
+	if (!relispartition &&
+		relkind != RELKIND_PARTITIONED_TABLE &&
+		relkind != RELKIND_PARTITIONED_INDEX)
 		return false;
 
 	return true;
@@ -141,7 +143,8 @@ pg_partition_tree(PG_FUNCTION_ARGS)
 			nulls[1] = true;
 
 		/* isleaf */
-		values[2] = BoolGetDatum(!RELKIND_HAS_PARTITIONS(relkind));
+		values[2] = BoolGetDatum(relkind != RELKIND_PARTITIONED_TABLE &&
+								 relkind != RELKIND_PARTITIONED_INDEX);
 
 		/* level */
 		if (relid != rootrelid)

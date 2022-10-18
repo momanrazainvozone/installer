@@ -23,7 +23,7 @@
  * from LIKE to indexscan limits rather harder than one might think ...
  * but that's the basic idea.)
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -44,7 +44,6 @@
 #include "catalog/pg_statistic.h"
 #include "catalog/pg_type.h"
 #include "mb/pg_wchar.h"
-#include "miscadmin.h"
 #include "nodes/makefuncs.h"
 #include "nodes/nodeFuncs.h"
 #include "nodes/supportnodes.h"
@@ -142,14 +141,6 @@ texticregexeq_support(PG_FUNCTION_ARGS)
 	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
 
 	PG_RETURN_POINTER(like_regex_support(rawreq, Pattern_Type_Regex_IC));
-}
-
-Datum
-text_starts_with_support(PG_FUNCTION_ARGS)
-{
-	Node	   *rawreq = (Node *) PG_GETARG_POINTER(0);
-
-	PG_RETURN_POINTER(like_regex_support(rawreq, Pattern_Type_Prefix));
 }
 
 /* Common code for the above */
@@ -255,7 +246,6 @@ match_pattern_prefix(Node *leftop,
 	Oid			eqopr;
 	Oid			ltopr;
 	Oid			geopr;
-	Oid			preopr = InvalidOid;
 	bool		collation_aware;
 	Expr	   *expr;
 	FmgrInfo	ltproc;
@@ -312,20 +302,12 @@ match_pattern_prefix(Node *leftop,
 	switch (ldatatype)
 	{
 		case TEXTOID:
-			if (opfamily == TEXT_PATTERN_BTREE_FAM_OID)
+			if (opfamily == TEXT_PATTERN_BTREE_FAM_OID ||
+				opfamily == TEXT_SPGIST_FAM_OID)
 			{
 				eqopr = TextEqualOperator;
 				ltopr = TextPatternLessOperator;
 				geopr = TextPatternGreaterEqualOperator;
-				collation_aware = false;
-			}
-			else if (opfamily == TEXT_SPGIST_FAM_OID)
-			{
-				eqopr = TextEqualOperator;
-				ltopr = TextPatternLessOperator;
-				geopr = TextPatternGreaterEqualOperator;
-				/* This opfamily has direct support for prefixing */
-				preopr = TextPrefixOperator;
 				collation_aware = false;
 			}
 			else
@@ -379,6 +361,20 @@ match_pattern_prefix(Node *leftop,
 	}
 
 	/*
+	 * If necessary, verify that the index's collation behavior is compatible.
+	 * For an exact-match case, we don't have to be picky.  Otherwise, insist
+	 * that the index collation be "C".  Note that here we are looking at the
+	 * index's collation, not the expression's collation -- this test is *not*
+	 * dependent on the LIKE/regex operator's collation.
+	 */
+	if (collation_aware)
+	{
+		if (!(pstatus == Pattern_Prefix_Exact ||
+			  lc_collate_is_c(indexcollation)))
+			return NIL;
+	}
+
+	/*
 	 * If necessary, coerce the prefix constant to the right type.  The given
 	 * prefix constant is either text or bytea type, therefore the only case
 	 * where we need to do anything is when converting text to bpchar.  Those
@@ -413,31 +409,8 @@ match_pattern_prefix(Node *leftop,
 	}
 
 	/*
-	 * Otherwise, we have a nonempty required prefix of the values.  Some
-	 * opclasses support prefix checks directly, otherwise we'll try to
-	 * generate a range constraint.
-	 */
-	if (OidIsValid(preopr) && op_in_opfamily(preopr, opfamily))
-	{
-		expr = make_opclause(preopr, BOOLOID, false,
-							 (Expr *) leftop, (Expr *) prefix,
-							 InvalidOid, indexcollation);
-		result = list_make1(expr);
-		return result;
-	}
-
-	/*
-	 * Since we need a range constraint, it's only going to work reliably if
-	 * the index is collation-insensitive or has "C" collation.  Note that
-	 * here we are looking at the index's collation, not the expression's
-	 * collation -- this test is *not* dependent on the LIKE/regex operator's
-	 * collation.
-	 */
-	if (collation_aware &&
-		!lc_collate_is_c(indexcollation))
-		return NIL;
-
-	/*
+	 * Otherwise, we have a nonempty required prefix of the values.
+	 *
 	 * We can always say "x >= prefix".
 	 */
 	if (!op_in_opfamily(geopr, opfamily))
@@ -1013,23 +986,24 @@ like_fixed_prefix(Const *patt_const, bool case_insensitive, Oid collation,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 					 errmsg("case insensitive matching not supported on type bytea")));
 
-		if (!OidIsValid(collation))
-		{
-			/*
-			 * This typically means that the parser could not resolve a
-			 * conflict of implicit collations, so report it that way.
-			 */
-			ereport(ERROR,
-					(errcode(ERRCODE_INDETERMINATE_COLLATION),
-					 errmsg("could not determine which collation to use for ILIKE"),
-					 errhint("Use the COLLATE clause to set the collation explicitly.")));
-		}
-
 		/* If case-insensitive, we need locale info */
 		if (lc_ctype_is_c(collation))
 			locale_is_c = true;
-		else
+		else if (collation != DEFAULT_COLLATION_OID)
+		{
+			if (!OidIsValid(collation))
+			{
+				/*
+				 * This typically means that the parser could not resolve a
+				 * conflict of implicit collations, so report it that way.
+				 */
+				ereport(ERROR,
+						(errcode(ERRCODE_INDETERMINATE_COLLATION),
+						 errmsg("could not determine which collation to use for ILIKE"),
+						 errhint("Use the COLLATE clause to set the collation explicitly.")));
+			}
 			locale = pg_newlocale_from_collation(collation);
+		}
 	}
 
 	if (typeid != BYTEAOID)
@@ -1191,6 +1165,7 @@ pattern_fixed_prefix(Const *patt, Pattern_Type ptype, Oid collation,
 		case Pattern_Type_Prefix:
 			/* Prefix type work is trivial.  */
 			result = Pattern_Prefix_Partial;
+			*rest_selec = 1.0;	/* all */
 			*prefix = makeConst(patt->consttype,
 								patt->consttypmod,
 								patt->constcollid,
@@ -1200,8 +1175,6 @@ pattern_fixed_prefix(Const *patt, Pattern_Type ptype, Oid collation,
 										  patt->constlen),
 								patt->constisnull,
 								patt->constbyval);
-			if (rest_selec != NULL)
-				*rest_selec = 1.0;	/* all */
 			break;
 		default:
 			elog(ERROR, "unrecognized ptype: %d", (int) ptype);
@@ -1364,9 +1337,6 @@ regex_selectivity_sub(const char *patt, int pattlen, bool case_insensitive)
 	int			paren_depth = 0;
 	int			paren_pos = 0;	/* dummy init to keep compiler quiet */
 	int			pos;
-
-	/* since this function recurses, it could be driven to stack overflow */
-	check_stack_depth();
 
 	for (pos = 0; pos < pattlen; pos++)
 	{

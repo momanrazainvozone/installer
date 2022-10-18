@@ -1,22 +1,20 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Verify the behavior of assorted pg_verifybackup options.
 
 use strict;
 use warnings;
+use Cwd;
+use Config;
 use File::Path qw(rmtree);
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 25;
 
 # Start up the server and take a backup.
-my $primary = PostgreSQL::Test::Cluster->new('primary');
-$primary->init(allows_streaming => 1);
-$primary->start;
-my $backup_path = $primary->backup_dir . '/test_options';
-$primary->command_ok(
-	[ 'pg_basebackup', '-D', $backup_path, '--no-sync', '-cfast' ],
+my $master = get_new_node('master');
+$master->init(allows_streaming => 1);
+$master->start;
+my $backup_path = $master->backup_dir . '/test_options';
+$master->command_ok([ 'pg_basebackup', '-D', $backup_path, '--no-sync' ],
 	"base backup ok");
 
 # Verify that pg_verifybackup -q succeeds and produces no output.
@@ -104,5 +102,3 @@ command_fails_like(
 	],
 	qr/could not open directory/,
 	'nonexistent backup directory');
-
-done_testing();

@@ -19,7 +19,7 @@
   <variablelist>
    <varlistentry>
     <term>
-     <function>get_raw_page(relname text, fork text, blkno bigint) returns bytea</function>
+     <function>get_raw_page(relname text, fork text, blkno int) returns bytea</function>
      <indexterm>
       <primary>get_raw_page</primary>
      </indexterm>
@@ -31,18 +31,16 @@
       relation and returns a copy as a <type>bytea</type> value.  This allows a
       single time-consistent copy of the block to be obtained.
       <replaceable>fork</replaceable> should be <literal>'main'</literal> for
-      the main data fork, <literal>'fsm'</literal> for the
-      <link linkend="storage-fsm">free space map</link>,
-      <literal>'vm'</literal> for the
-      <link linkend="storage-vm">visibility map</link>, or
-      <literal>'init'</literal> for the initialization fork.
+      the main data fork, <literal>'fsm'</literal> for the free space map,
+      <literal>'vm'</literal> for the visibility map, or <literal>'init'</literal>
+      for the initialization fork.
      </para>
     </listitem>
    </varlistentry>
 
    <varlistentry>
     <term>
-     <function>get_raw_page(relname text, blkno bigint) returns bytea</function>
+     <function>get_raw_page(relname text, blkno int) returns bytea</function>
     </term>
 
     <listitem>
@@ -93,7 +91,7 @@ test=# SELECT * FROM page_header(get_raw_page('pg_class', 0));
 
    <varlistentry>
     <term>
-     <function>page_checksum(page bytea, blkno bigint) returns smallint</function>
+     <function>page_checksum(page bytea, blkno int4) returns smallint</function>
      <indexterm>
       <primary>page_checksum</primary>
      </indexterm>
@@ -138,7 +136,7 @@ test=# SELECT page_checksum(get_raw_page('pg_class', 0), 0);
     <listitem>
      <para>
       <function>fsm_page_contents</function> shows the internal node structure
-      of an <acronym>FSM</acronym> page.  For example:
+      of a FSM page.  For example:
 <screen>
 test=# SELECT fsm_page_contents(get_raw_page('pg_class', 'fsm', 0));
 </screen>
@@ -149,7 +147,7 @@ test=# SELECT fsm_page_contents(get_raw_page('pg_class', 'fsm', 0));
      </para>
      <para>
       See <filename>src/backend/storage/freespace/README</filename> for more
-      information on the structure of an <acronym>FSM</acronym> page.
+      information on the structure of an FSM page.
      </para>
     </listitem>
    </varlistentry>
@@ -300,16 +298,16 @@ test=# SELECT t_ctid, raw_flags, combined_flags
       index's metapage.  For example:
 <screen>
 test=# SELECT * FROM bt_metap('pg_cast_oid_index');
--[ RECORD 1 ]-------------+-------
-magic                     | 340322
-version                   | 4
-root                      | 1
-level                     | 0
-fastroot                  | 1
-fastlevel                 | 0
-last_cleanup_num_delpages | 0
-last_cleanup_num_tuples   | 230
-allequalimage             | f
+-[ RECORD 1 ]-----------+-------
+magic                   | 340322
+version                 | 4
+root                    | 1
+level                   | 0
+fastroot                | 1
+fastlevel               | 0
+oldest_xact             | 582
+last_cleanup_num_tuples | 1000
+allequalimage           | f
 </screen>
      </para>
     </listitem>
@@ -317,7 +315,7 @@ allequalimage             | f
 
    <varlistentry>
     <term>
-     <function>bt_page_stats(relname text, blkno bigint) returns record</function>
+     <function>bt_page_stats(relname text, blkno int) returns record</function>
      <indexterm>
       <primary>bt_page_stats</primary>
      </indexterm>
@@ -339,7 +337,7 @@ page_size     | 8192
 free_size     | 3668
 btpo_prev     | 0
 btpo_next     | 0
-btpo_level    | 0
+btpo          | 0
 btpo_flags    | 3
 </screen>
      </para>
@@ -348,7 +346,7 @@ btpo_flags    | 3
 
    <varlistentry>
     <term>
-     <function>bt_page_items(relname text, blkno bigint) returns setof record</function>
+     <function>bt_page_items(relname text, blkno int) returns setof record</function>
      <indexterm>
       <primary>bt_page_items</primary>
      </indexterm>
@@ -492,7 +490,7 @@ test=# SELECT itemoffset, ctid, itemlen, nulls, vars, data, dead, htid, tids[0:2
       not a valid <acronym>BRIN</acronym> page.  For example:
 <screen>
 test=# SELECT brin_page_type(get_raw_page('brinidx', 0));
- brin_page_type
+ brin_page_type 
 ----------------
  meta
 </screen>
@@ -514,7 +512,7 @@ test=# SELECT brin_page_type(get_raw_page('brinidx', 0));
       about a <acronym>BRIN</acronym> index metapage.  For example:
 <screen>
 test=# SELECT * FROM brin_metapage_info(get_raw_page('brinidx', 0));
-   magic    | version | pagesperrange | lastrevmappage
+   magic    | version | pagesperrange | lastrevmappage 
 ------------+---------+---------------+----------------
  0xA8109CFA |       1 |             4 |              2
 </screen>
@@ -537,7 +535,7 @@ test=# SELECT * FROM brin_metapage_info(get_raw_page('brinidx', 0));
       For example:
 <screen>
 test=# SELECT * FROM brin_revmap_data(get_raw_page('brinidx', 2)) LIMIT 5;
-  pages
+  pages  
 ---------
  (6,137)
  (6,138)
@@ -565,13 +563,13 @@ test=# SELECT * FROM brin_revmap_data(get_raw_page('brinidx', 2)) LIMIT 5;
 test=# SELECT * FROM brin_page_items(get_raw_page('brinidx', 5),
                                      'brinidx')
        ORDER BY blknum, attnum LIMIT 6;
- itemoffset | blknum | attnum | allnulls | hasnulls | placeholder |    value
+ itemoffset | blknum | attnum | allnulls | hasnulls | placeholder |    value     
 ------------+--------+--------+----------+----------+-------------+--------------
-        137 |      0 |      1 | t        | f        | f           |
+        137 |      0 |      1 | t        | f        | f           | 
         137 |      0 |      2 | f        | f        | f           | {1 .. 88}
-        138 |      4 |      1 | t        | f        | f           |
+        138 |      4 |      1 | t        | f        | f           | 
         138 |      4 |      2 | f        | f        | f           | {89 .. 176}
-        139 |      8 |      1 | t        | f        | f           |
+        139 |      8 |      1 | t        | f        | f           | 
         139 |      8 |      2 | f        | f        | f           | {177 .. 264}
 </screen>
       The returned columns correspond to the fields in the
@@ -674,97 +672,6 @@ test=# SELECT first_tid, nbytes, tids[0:5] AS some_tids
  </sect2>
 
  <sect2>
-  <title>GiST Functions</title>
-
-  <variablelist>
-   <varlistentry>
-    <term>
-     <function>gist_page_opaque_info(page bytea) returns record</function>
-     <indexterm>
-      <primary>gist_page_opaque_info</primary>
-     </indexterm>
-    </term>
-
-    <listitem>
-     <para>
-      <function>gist_page_opaque_info</function> returns information from
-      a <acronym>GiST</acronym> index page's opaque area, such as the NSN,
-      rightlink and page type.
-      For example:
-<screen>
-test=# SELECT * FROM gist_page_opaque_info(get_raw_page('test_gist_idx', 2));
- lsn | nsn | rightlink | flags
------+-----+-----------+--------
- 0/1 | 0/0 |         1 | {leaf}
-(1 row)
-</screen>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <function>gist_page_items(page bytea, index_oid regclass) returns setof record</function>
-     <indexterm>
-      <primary>gist_page_items</primary>
-     </indexterm>
-    </term>
-
-    <listitem>
-     <para>
-      <function>gist_page_items</function> returns information about
-      the data stored in a page of a <acronym>GiST</acronym> index.  For example:
-<screen>
-test=# SELECT * FROM gist_page_items(get_raw_page('test_gist_idx', 0), 'test_gist_idx');
- itemoffset |   ctid    | itemlen | dead |       keys
-------------+-----------+---------+------+-------------------
-          1 | (1,65535) |      40 | f    | (p)=((166,166))
-          2 | (2,65535) |      40 | f    | (p)=((332,332))
-          3 | (3,65535) |      40 | f    | (p)=((498,498))
-          4 | (4,65535) |      40 | f    | (p)=((664,664))
-          5 | (5,65535) |      40 | f    | (p)=((830,830))
-          6 | (6,65535) |      40 | f    | (p)=((996,996))
-          7 | (7,65535) |      40 | f    | (p)=((1000,1000))
-(7 rows)
-</screen>
-     </para>
-    </listitem>
-   </varlistentry>
-
-   <varlistentry>
-    <term>
-     <function>gist_page_items_bytea(page bytea) returns setof record</function>
-     <indexterm>
-      <primary>gist_page_items_bytea</primary>
-     </indexterm>
-    </term>
-
-    <listitem>
-     <para>
-      Same as <function>gist_page_items</function>, but returns the key data
-      as a raw <type>bytea</type> blob.  Since it does not attempt to decode
-      the key, it does not need to know which index is involved.  For
-      example:
-<screen>
-test=# SELECT * FROM gist_page_items_bytea(get_raw_page('test_gist_idx', 0));
- itemoffset |   ctid    | itemlen | dead |                                      key_data
-------------+-----------+---------+------+-----------------------------------------&zwsp;-------------------------------------------
-          1 | (1,65535) |      40 | f    | \x00000100ffff28000000000000c0644000000000&zwsp;00c06440000000000000f03f000000000000f03f
-          2 | (2,65535) |      40 | f    | \x00000200ffff28000000000000c0744000000000&zwsp;00c074400000000000e064400000000000e06440
-          3 | (3,65535) |      40 | f    | \x00000300ffff28000000000000207f4000000000&zwsp;00207f400000000000d074400000000000d07440
-          4 | (4,65535) |      40 | f    | \x00000400ffff28000000000000c0844000000000&zwsp;00c084400000000000307f400000000000307f40
-          5 | (5,65535) |      40 | f    | \x00000500ffff28000000000000f0894000000000&zwsp;00f089400000000000c884400000000000c88440
-          6 | (6,65535) |      40 | f    | \x00000600ffff28000000000000208f4000000000&zwsp;00208f400000000000f889400000000000f88940
-          7 | (7,65535) |      40 | f    | \x00000700ffff28000000000000408f4000000000&zwsp;00408f400000000000288f400000000000288f40
-(7 rows)
-</screen>
-     </para>
-    </listitem>
-   </varlistentry>
-  </variablelist>
- </sect2>
-
- <sect2>
   <title>Hash Functions</title>
 
   <variablelist>
@@ -782,7 +689,7 @@ test=# SELECT * FROM gist_page_items_bytea(get_raw_page('test_gist_idx', 0));
       the given <acronym>HASH</acronym> index page.  For example:
 <screen>
 test=# SELECT hash_page_type(get_raw_page('con_hash_index', 0));
- hash_page_type
+ hash_page_type 
 ----------------
  metapage
 </screen>
@@ -835,7 +742,7 @@ hasho_page_id   | 65408
       index page.  For example:
 <screen>
 test=# SELECT * FROM hash_page_items(get_raw_page('con_hash_index', 1)) LIMIT 5;
- itemoffset |   ctid    |    data
+ itemoffset |   ctid    |    data    
 ------------+-----------+------------
           1 | (899,77)  | 1053474816
           2 | (897,29)  | 1053474816
@@ -849,7 +756,7 @@ test=# SELECT * FROM hash_page_items(get_raw_page('con_hash_index', 1)) LIMIT 5;
 
    <varlistentry>
     <term>
-     <function>hash_bitmap_info(index oid, blkno bigint) returns record</function>
+     <function>hash_bitmap_info(index oid, blkno int) returns record</function>
      <indexterm>
       <primary>hash_bitmap_info</primary>
      </indexterm>
@@ -862,7 +769,7 @@ test=# SELECT * FROM hash_page_items(get_raw_page('con_hash_index', 1)) LIMIT 5;
       index. For example:
 <screen>
 test=# SELECT * FROM hash_bitmap_info('con_hash_index', 2052);
- bitmapblkno | bitmapbit | bitstatus
+ bitmapblkno | bitmapbit | bitstatus 
 -------------+-----------+-----------
           65 |         3 | t
 </screen>

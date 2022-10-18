@@ -1,7 +1,7 @@
 /*
  * psql - the PostgreSQL interactive terminal
  *
- * Copyright (c) 2000-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2000-2020, PostgreSQL Global Development Group
  *
  * src/bin/psql/mainloop.c
  */
@@ -77,7 +77,10 @@ MainLoop(FILE *source)
 	if (PQExpBufferBroken(query_buf) ||
 		PQExpBufferBroken(previous_buf) ||
 		PQExpBufferBroken(history_buf))
-		pg_fatal("out of memory");
+	{
+		pg_log_error("out of memory");
+		exit(EXIT_FAILURE);
+	}
 
 	/* main loop to get queries and execute them */
 	while (successResult == EXIT_SUCCESS)
@@ -395,7 +398,10 @@ MainLoop(FILE *source)
 			prompt_status = prompt_tmp;
 
 			if (PQExpBufferBroken(query_buf))
-				pg_fatal("out of memory");
+			{
+				pg_log_error("out of memory");
+				exit(EXIT_FAILURE);
+			}
 
 			/*
 			 * Increase statement line number counter for each linebreak added
@@ -558,20 +564,9 @@ MainLoop(FILE *source)
 				break;
 		}
 
-		/*
-		 * Add line to pending history if we didn't do so already.  Then, if
-		 * the query buffer is still empty, flush out any unsent history
-		 * entry.  This means that empty lines (containing only whitespace and
-		 * perhaps a dash-dash comment) that precede a query will be recorded
-		 * as separate history entries, not as part of that query.
-		 */
-		if (pset.cur_cmd_interactive)
-		{
-			if (!line_saved_in_history)
-				pg_append_history(line, history_buf);
-			if (query_buf->len == 0)
-				pg_send_history(history_buf);
-		}
+		/* Add line to pending history if we didn't execute anything yet */
+		if (pset.cur_cmd_interactive && !line_saved_in_history)
+			pg_append_history(line, history_buf);
 
 		psql_scan_finish(scan_state);
 		free(line);

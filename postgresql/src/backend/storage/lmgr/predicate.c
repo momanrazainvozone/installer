@@ -135,7 +135,7 @@
  *		- Protects both PredXact and SerializableXidHash.
  *
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -494,7 +494,7 @@ static void ReleasePredicateLocksLocal(void);
 static inline bool
 PredicateLockingNeededForRelation(Relation relation)
 {
-	return !(relation->rd_id < FirstUnpinnedObjectId ||
+	return !(relation->rd_id < FirstBootstrapObjectId ||
 			 RelationUsesLocalBuffers(relation) ||
 			 relation->rd_rel->relkind == RELKIND_MATVIEW);
 }
@@ -873,7 +873,9 @@ SerialInit(void)
 	SerialSlruCtl->PagePrecedes = SerialPagePrecedesLogically;
 	SimpleLruInit(SerialSlruCtl, "Serial",
 				  NUM_SERIAL_BUFFERS, 0, SerialSLRULock, "pg_serial",
-				  LWTRANCHE_SERIAL_BUFFER, SYNC_HANDLER_NONE);
+				  LWTRANCHE_SERIAL_BUFFER);
+	/* Override default assumption that writes should be fsync'd */
+	SerialSlruCtl->do_fsync = false;
 #ifdef USE_ASSERT_CHECKING
 	SerialPagePrecedesLogicallyUnitTests();
 #endif
@@ -1125,7 +1127,7 @@ CheckPointPredicate(void)
 	SimpleLruTruncate(SerialSlruCtl, tailPage);
 
 	/*
-	 * Write dirty SLRU pages to disk
+	 * Flush dirty SLRU pages to disk
 	 *
 	 * This is not actually necessary from a correctness point of view. We do
 	 * it merely as a debugging aid.
@@ -1134,7 +1136,7 @@ CheckPointPredicate(void)
 	 * before deleting the file in which they sit, which would be completely
 	 * pointless.
 	 */
-	SimpleLruWriteAll(SerialSlruCtl, true);
+	SimpleLruFlush(SerialSlruCtl, true);
 }
 
 /*------------------------------------------------------------------------*/
@@ -1171,6 +1173,7 @@ InitPredicateLocks(void)
 	 * Allocate hash table for PREDICATELOCKTARGET structs.  This stores
 	 * per-predicate-lock-target information.
 	 */
+	MemSet(&info, 0, sizeof(info));
 	info.keysize = sizeof(PREDICATELOCKTARGETTAG);
 	info.entrysize = sizeof(PREDICATELOCKTARGET);
 	info.num_partitions = NUM_PREDICATELOCK_PARTITIONS;
@@ -1203,6 +1206,7 @@ InitPredicateLocks(void)
 	 * Allocate hash table for PREDICATELOCK structs.  This stores per
 	 * xact-lock-of-a-target information.
 	 */
+	MemSet(&info, 0, sizeof(info));
 	info.keysize = sizeof(PREDICATELOCKTAG);
 	info.entrysize = sizeof(PREDICATELOCK);
 	info.hash = predicatelock_hash;
@@ -1277,7 +1281,6 @@ InitPredicateLocks(void)
 		PredXact->OldCommittedSxact->xmin = InvalidTransactionId;
 		PredXact->OldCommittedSxact->flags = SXACT_FLAG_COMMITTED;
 		PredXact->OldCommittedSxact->pid = 0;
-		PredXact->OldCommittedSxact->pgprocno = INVALID_PGPROCNO;
 	}
 	/* This never changes, so let's keep a local copy. */
 	OldCommittedSxact = PredXact->OldCommittedSxact;
@@ -1286,6 +1289,7 @@ InitPredicateLocks(void)
 	 * Allocate hash table for SERIALIZABLEXID structs.  This stores per-xid
 	 * information for serializable transactions which have accessed data.
 	 */
+	MemSet(&info, 0, sizeof(info));
 	info.keysize = sizeof(SERIALIZABLEXIDTAG);
 	info.entrysize = sizeof(SERIALIZABLEXID);
 
@@ -1603,7 +1607,7 @@ GetSafeSnapshot(Snapshot origSnapshot)
 		/* else, need to retry... */
 		ereport(DEBUG2,
 				(errcode(ERRCODE_T_R_SERIALIZATION_FAILURE),
-				 errmsg_internal("deferrable snapshot was unsafe; trying a new one")));
+				 errmsg("deferrable snapshot was unsafe; trying a new one")));
 		ReleasePredicateLocks(false, false);
 	}
 
@@ -1877,7 +1881,6 @@ GetSerializableTransactionSnapshotInt(Snapshot snapshot,
 	sxact->finishedBefore = InvalidTransactionId;
 	sxact->xmin = snapshot->xmin;
 	sxact->pid = MyProcPid;
-	sxact->pgprocno = MyProc->pgprocno;
 	SHMQueueInit(&(sxact->predicateLocks));
 	SHMQueueElemInit(&(sxact->finishedLink));
 	sxact->flags = 0;
@@ -1927,6 +1930,7 @@ CreateLocalPredicateLockHash(void)
 
 	/* Initialize the backend-local hash table of parent locks */
 	Assert(LocalPredicateLockHash == NULL);
+	MemSet(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(PREDICATELOCKTARGETTAG);
 	hash_ctl.entrysize = sizeof(LOCALPREDICATELOCK);
 	LocalPredicateLockHash = hash_create("Local predicate lock",
@@ -3461,7 +3465,7 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 	 * transaction to complete before freeing some RAM; correctness of visible
 	 * behavior is not affected.
 	 */
-	MySerializableXact->finishedBefore = XidFromFullTransactionId(ShmemVariableCache->nextXid);
+	MySerializableXact->finishedBefore = XidFromFullTransactionId(ShmemVariableCache->nextFullXid);
 
 	/*
 	 * If it's not a commit it's either a rollback or a read-only transaction
@@ -3671,7 +3675,7 @@ ReleasePredicateLocks(bool isCommit, bool isReadOnlySafe)
 			 */
 			if (SxactIsDeferrableWaiting(roXact) &&
 				(SxactIsROUnsafe(roXact) || SxactIsROSafe(roXact)))
-				ProcSendSignal(roXact->pgprocno);
+				ProcSendSignal(roXact->pid);
 
 			possibleUnsafeConflict = nextConflict;
 		}
@@ -5008,7 +5012,6 @@ PostPrepare_PredicateLocks(TransactionId xid)
 	Assert(SxactIsPrepared(MySerializableXact));
 
 	MySerializableXact->pid = 0;
-	MySerializableXact->pgprocno = INVALID_PGPROCNO;
 
 	hash_destroy(LocalPredicateLockHash);
 	LocalPredicateLockHash = NULL;
@@ -5084,7 +5087,6 @@ predicatelock_twophase_recover(TransactionId xid, uint16 info,
 		sxact->vxid.backendId = InvalidBackendId;
 		sxact->vxid.localTransactionId = (LocalTransactionId) xid;
 		sxact->pid = 0;
-		sxact->pgprocno = INVALID_PGPROCNO;
 
 		/* a prepared xact hasn't committed yet */
 		sxact->prepareSeqNo = RecoverySerCommitSeqNo;

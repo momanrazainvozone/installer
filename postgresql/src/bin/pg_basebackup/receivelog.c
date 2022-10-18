@@ -5,7 +5,7 @@
  *
  * Author: Magnus Hagander <magnus@hagander.net>
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  src/bin/pg_basebackup/receivelog.c
@@ -46,7 +46,8 @@ static bool ProcessXLogDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, i
 							   XLogRecPtr *blockpos);
 static PGresult *HandleEndOfCopyStream(PGconn *conn, StreamCtl *stream, char *copybuf,
 									   XLogRecPtr blockpos, XLogRecPtr *stoppos);
-static bool CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos);
+static bool CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos,
+								XLogRecPtr *stoppos);
 static long CalculateCopyStreamSleeptime(TimestampTz now, int standby_message_timeout,
 										 TimestampTz last_status);
 
@@ -114,7 +115,7 @@ open_walfile(StreamCtl *stream, XLogRecPtr startpoint)
 	 * When streaming to tar, no file with this name will exist before, so we
 	 * never have to verify a size.
 	 */
-	if (stream->walmethod->compression_algorithm() == PG_COMPRESSION_NONE &&
+	if (stream->walmethod->compression() == 0 &&
 		stream->walmethod->existsfile(fn))
 	{
 		size = stream->walmethod->get_file_size(fn);
@@ -140,7 +141,7 @@ open_walfile(StreamCtl *stream, XLogRecPtr startpoint)
 			/* fsync file in case of a previous crash */
 			if (stream->walmethod->sync(f) != 0)
 			{
-				pg_log_error("could not fsync existing write-ahead log file \"%s\": %s",
+				pg_log_fatal("could not fsync existing write-ahead log file \"%s\": %s",
 							 fn, stream->walmethod->getlasterror());
 				stream->walmethod->close(f, CLOSE_UNLINK);
 				exit(1);
@@ -155,10 +156,10 @@ open_walfile(StreamCtl *stream, XLogRecPtr startpoint)
 			/* if write didn't set errno, assume problem is no disk space */
 			if (errno == 0)
 				errno = ENOSPC;
-			pg_log_error(ngettext("write-ahead log file \"%s\" has %zd byte, should be 0 or %d",
-								  "write-ahead log file \"%s\" has %zd bytes, should be 0 or %d",
+			pg_log_error(ngettext("write-ahead log file \"%s\" has %d byte, should be 0 or %d",
+								  "write-ahead log file \"%s\" has %d bytes, should be 0 or %d",
 								  size),
-						 fn, size, WalSegSz);
+						 fn, (int) size, WalSegSz);
 			pg_free(fn);
 			return false;
 		}
@@ -190,27 +191,20 @@ open_walfile(StreamCtl *stream, XLogRecPtr startpoint)
 static bool
 close_walfile(StreamCtl *stream, XLogRecPtr pos)
 {
-	char	   *fn;
 	off_t		currpos;
 	int			r;
 
 	if (walfile == NULL)
 		return true;
 
-	/* Note that this considers the compression used if necessary */
-	fn = stream->walmethod->get_file_name(current_walfile_name,
-										  stream->partial_suffix);
-
 	currpos = stream->walmethod->get_current_pos(walfile);
-
 	if (currpos == -1)
 	{
 		pg_log_error("could not determine seek position in file \"%s\": %s",
-					 fn, stream->walmethod->getlasterror());
+					 current_walfile_name, stream->walmethod->getlasterror());
 		stream->walmethod->close(walfile, CLOSE_UNLINK);
 		walfile = NULL;
 
-		pg_free(fn);
 		return false;
 	}
 
@@ -220,7 +214,8 @@ close_walfile(StreamCtl *stream, XLogRecPtr pos)
 			r = stream->walmethod->close(walfile, CLOSE_NORMAL);
 		else
 		{
-			pg_log_info("not renaming \"%s\", segment is not complete", fn);
+			pg_log_info("not renaming \"%s%s\", segment is not complete",
+						current_walfile_name, stream->partial_suffix);
 			r = stream->walmethod->close(walfile, CLOSE_NO_RENAME);
 		}
 	}
@@ -232,13 +227,9 @@ close_walfile(StreamCtl *stream, XLogRecPtr pos)
 	if (r != 0)
 	{
 		pg_log_error("could not close file \"%s\": %s",
-					 fn, stream->walmethod->getlasterror());
-
-		pg_free(fn);
+					 current_walfile_name, stream->walmethod->getlasterror());
 		return false;
 	}
-
-	pg_free(fn);
 
 	/*
 	 * Mark file as archived if requested by the caller - pg_basebackup needs
@@ -440,7 +431,7 @@ CheckServerVersionForStreaming(PGconn *conn)
  * race-y since a signal received while busy won't interrupt the wait.
  *
  * standby_message_timeout controls how often we send a message
- * back to the primary letting it know our progress, in milliseconds.
+ * back to the master letting it know our progress, in milliseconds.
  * Zero means no messages are sent.
  * This message will only contain the write location, and never
  * flush or replay.
@@ -497,32 +488,36 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 
 	if (stream->sysidentifier != NULL)
 	{
-		char	   *sysidentifier = NULL;
-		TimeLineID	servertli;
-
-		/*
-		 * Get the server system identifier and timeline, and validate them.
-		 */
-		if (!RunIdentifySystem(conn, &sysidentifier, &servertli, NULL, NULL))
+		/* Validate system identifier hasn't changed */
+		res = PQexec(conn, "IDENTIFY_SYSTEM");
+		if (PQresultStatus(res) != PGRES_TUPLES_OK)
 		{
-			pg_free(sysidentifier);
+			pg_log_error("could not send replication command \"%s\": %s",
+						 "IDENTIFY_SYSTEM", PQerrorMessage(conn));
+			PQclear(res);
 			return false;
 		}
-
-		if (strcmp(stream->sysidentifier, sysidentifier) != 0)
+		if (PQntuples(res) != 1 || PQnfields(res) < 3)
+		{
+			pg_log_error("could not identify system: got %d rows and %d fields, expected %d rows and %d or more fields",
+						 PQntuples(res), PQnfields(res), 1, 3);
+			PQclear(res);
+			return false;
+		}
+		if (strcmp(stream->sysidentifier, PQgetvalue(res, 0, 0)) != 0)
 		{
 			pg_log_error("system identifier does not match between base backup and streaming connection");
-			pg_free(sysidentifier);
+			PQclear(res);
 			return false;
 		}
-		pg_free(sysidentifier);
-
-		if (stream->timeline > servertli)
+		if (stream->timeline > atoi(PQgetvalue(res, 0, 1)))
 		{
 			pg_log_error("starting timeline %u is not present in the server",
 						 stream->timeline);
+			PQclear(res);
 			return false;
 		}
+		PQclear(res);
 	}
 
 	/*
@@ -580,7 +575,7 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 		/* Initiate the replication stream at specified location */
 		snprintf(query, sizeof(query), "START_REPLICATION %s%X/%X TIMELINE %u",
 				 slotcmd,
-				 LSN_FORMAT_ARGS(stream->startpos),
+				 (uint32) (stream->startpos >> 32), (uint32) stream->startpos,
 				 stream->timeline);
 		res = PQexec(conn, query);
 		if (PQresultStatus(res) != PGRES_COPY_BOTH)
@@ -636,8 +631,8 @@ ReceiveXlogStream(PGconn *conn, StreamCtl *stream)
 			if (stream->startpos > stoppos)
 			{
 				pg_log_error("server stopped streaming timeline %u at %X/%X, but reported next timeline %u to begin at %X/%X",
-							 stream->timeline, LSN_FORMAT_ARGS(stoppos),
-							 newtimeline, LSN_FORMAT_ARGS(stream->startpos));
+							 stream->timeline, (uint32) (stoppos >> 32), (uint32) stoppos,
+							 newtimeline, (uint32) (stream->startpos >> 32), (uint32) stream->startpos);
 				goto error;
 			}
 
@@ -766,7 +761,7 @@ HandleCopyStream(PGconn *conn, StreamCtl *stream,
 		/*
 		 * Check if we should continue streaming, or abort at this point.
 		 */
-		if (!CheckCopyStreamStop(conn, stream, blockpos))
+		if (!CheckCopyStreamStop(conn, stream, blockpos, stoppos))
 			goto error;
 
 		now = feGetCurrentTimestamp();
@@ -778,8 +773,11 @@ HandleCopyStream(PGconn *conn, StreamCtl *stream,
 		if (stream->synchronous && lastFlushPosition < blockpos && walfile != NULL)
 		{
 			if (stream->walmethod->sync(walfile) != 0)
-				pg_fatal("could not fsync file \"%s\": %s",
-						 current_walfile_name, stream->walmethod->getlasterror());
+			{
+				pg_log_fatal("could not fsync file \"%s\": %s",
+							 current_walfile_name, stream->walmethod->getlasterror());
+				exit(1);
+			}
 			lastFlushPosition = blockpos;
 
 			/*
@@ -792,7 +790,7 @@ HandleCopyStream(PGconn *conn, StreamCtl *stream,
 		}
 
 		/*
-		 * Potentially send a status message to the primary
+		 * Potentially send a status message to the master
 		 */
 		if (still_sending && stream->standby_message_timeout > 0 &&
 			feTimestampDifferenceExceeds(last_status, now,
@@ -841,7 +839,7 @@ HandleCopyStream(PGconn *conn, StreamCtl *stream,
 				 * Check if we should continue streaming, or abort at this
 				 * point.
 				 */
-				if (!CheckCopyStreamStop(conn, stream, blockpos))
+				if (!CheckCopyStreamStop(conn, stream, blockpos, stoppos))
 					goto error;
 			}
 			else
@@ -914,7 +912,7 @@ CopyStreamPoll(PGconn *conn, long timeout_ms, pgsocket stop_socket)
 	{
 		if (errno == EINTR)
 			return 0;			/* Got a signal, so not an error */
-		pg_log_error("%s() failed: %m", "select");
+		pg_log_error("select() failed: %m");
 		return -1;
 	}
 	if (ret > 0 && FD_ISSET(connsocket, &input_mask))
@@ -1027,8 +1025,11 @@ ProcessKeepaliveMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
 			 * shutdown of the server.
 			 */
 			if (stream->walmethod->sync(walfile) != 0)
-				pg_fatal("could not fsync file \"%s\": %s",
-						 current_walfile_name, stream->walmethod->getlasterror());
+			{
+				pg_log_fatal("could not fsync file \"%s\": %s",
+							 current_walfile_name, stream->walmethod->getlasterror());
+				exit(1);
+			}
 			lastFlushPosition = blockpos;
 		}
 
@@ -1132,7 +1133,7 @@ ProcessXLogDataMsg(PGconn *conn, StreamCtl *stream, char *copybuf, int len,
 		if (stream->walmethod->write(walfile, copybuf + hdr_len + bytes_written,
 									 bytes_to_write) != bytes_to_write)
 		{
-			pg_log_error("could not write %d bytes to WAL file \"%s\": %s",
+			pg_log_error("could not write %u bytes to WAL file \"%s\": %s",
 						 bytes_to_write, current_walfile_name,
 						 stream->walmethod->getlasterror());
 			return false;
@@ -1216,7 +1217,8 @@ HandleEndOfCopyStream(PGconn *conn, StreamCtl *stream, char *copybuf,
  * Check if we should continue streaming, or abort at this point.
  */
 static bool
-CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos)
+CheckCopyStreamStop(PGconn *conn, StreamCtl *stream, XLogRecPtr blockpos,
+					XLogRecPtr *stoppos)
 {
 	if (still_sending && stream->stream_stop(blockpos, stream->timeline, false))
 	{

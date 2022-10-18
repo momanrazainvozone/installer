@@ -4,7 +4,7 @@
  *	  creator functions for various nodes. The functions here are for the
  *	  most frequently created nodes.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -63,7 +63,7 @@ makeSimpleA_Expr(A_Expr_Kind kind, char *name,
  *	  creates a Var node
  */
 Var *
-makeVar(int varno,
+makeVar(Index varno,
 		AttrNumber varattno,
 		Oid vartype,
 		int32 vartypmod,
@@ -85,7 +85,7 @@ makeVar(int varno,
 	 * them, but just initialize them to the given varno/varattno.  This
 	 * reduces code clutter and chance of error for most callers.
 	 */
-	var->varnosyn = (Index) varno;
+	var->varnosyn = varno;
 	var->varattnosyn = varattno;
 
 	/* Likewise, we just set location to "unknown" here */
@@ -100,7 +100,7 @@ makeVar(int varno,
  *		TargetEntry
  */
 Var *
-makeVarFromTargetEntry(int varno,
+makeVarFromTargetEntry(Index varno,
 					   TargetEntry *tle)
 {
 	return makeVar(varno,
@@ -131,7 +131,7 @@ makeVarFromTargetEntry(int varno,
  */
 Var *
 makeWholeRowVar(RangeTblEntry *rte,
-				int varno,
+				Index varno,
 				Index varlevelsup,
 				bool allowScalar)
 {
@@ -145,10 +145,8 @@ makeWholeRowVar(RangeTblEntry *rte,
 			/* relation: the rowtype is a named composite type */
 			toid = get_rel_type_id(rte->relid);
 			if (!OidIsValid(toid))
-				ereport(ERROR,
-						(errcode(ERRCODE_WRONG_OBJECT_TYPE),
-						 errmsg("relation \"%s\" does not have a composite type",
-								get_rel_name(rte->relid))));
+				elog(ERROR, "could not find type OID for relation %u",
+					 rte->relid);
 			result = makeVar(varno,
 							 InvalidAttrNumber,
 							 toid,
@@ -582,7 +580,7 @@ makeDefElemExtended(char *nameSpace, char *name, Node *arg,
  * supply.  Any non-default parameters have to be inserted by the caller.
  */
 FuncCall *
-makeFuncCall(List *name, List *args, CoercionForm funcformat, int location)
+makeFuncCall(List *name, List *args, int location)
 {
 	FuncCall   *n = makeNode(FuncCall);
 
@@ -590,12 +588,11 @@ makeFuncCall(List *name, List *args, CoercionForm funcformat, int location)
 	n->args = args;
 	n->agg_order = NIL;
 	n->agg_filter = NULL;
-	n->over = NULL;
 	n->agg_within_group = false;
 	n->agg_star = false;
 	n->agg_distinct = false;
 	n->func_variadic = false;
-	n->funcformat = funcformat;
+	n->over = NULL;
 	n->location = location;
 	return n;
 }
@@ -741,7 +738,7 @@ make_ands_implicit(Expr *clause)
  */
 IndexInfo *
 makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid, List *expressions,
-			  List *predicates, bool unique, bool nulls_not_distinct, bool isready, bool concurrent)
+			  List *predicates, bool unique, bool isready, bool concurrent)
 {
 	IndexInfo  *n = makeNode(IndexInfo);
 
@@ -750,10 +747,7 @@ makeIndexInfo(int numattrs, int numkeyattrs, Oid amoid, List *expressions,
 	Assert(n->ii_NumIndexKeyAttrs != 0);
 	Assert(n->ii_NumIndexKeyAttrs <= n->ii_NumIndexAttrs);
 	n->ii_Unique = unique;
-	n->ii_NullsNotDistinct = nulls_not_distinct;
 	n->ii_ReadyForInserts = isready;
-	n->ii_CheckedUnchanged = false;
-	n->ii_IndexUnchanged = false;
 	n->ii_Concurrent = concurrent;
 
 	/* expressions */

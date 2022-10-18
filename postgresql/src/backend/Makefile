@@ -2,7 +2,7 @@
 #
 # Makefile for the postgres backend
 #
-# Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+# Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
 # Portions Copyright (c) 1994, Regents of the University of California
 #
 # src/backend/Makefile
@@ -17,8 +17,7 @@ subdir = src/backend
 top_builddir = ../..
 include $(top_builddir)/src/Makefile.global
 
-SUBDIRS = access backup bootstrap catalog parser commands executor \
-	foreign lib libpq \
+SUBDIRS = access bootstrap catalog parser commands executor foreign lib libpq \
 	main nodes optimizer partitioning port postmaster \
 	regex replication rewrite \
 	statistics storage tcop tsearch utils $(top_builddir)/src/timezone \
@@ -49,7 +48,7 @@ OBJS = \
 LIBS := $(filter-out -lpgport -lpgcommon, $(LIBS)) $(LDAP_LIBS_BE) $(ICU_LIBS)
 
 # The backend doesn't need everything that's in LIBS, however
-LIBS := $(filter-out -lreadline -ledit -ltermcap -lncurses -lcurses, $(LIBS))
+LIBS := $(filter-out -lz -lreadline -ledit -ltermcap -lncurses -lcurses, $(LIBS))
 
 ifeq ($(with_systemd),yes)
 LIBS += -lsystemd
@@ -191,6 +190,7 @@ distprep:
 	$(MAKE) -C utils	distprep
 	$(MAKE) -C utils/adt	jsonpath_gram.c jsonpath_scan.c
 	$(MAKE) -C utils/misc	guc-file.c
+	$(MAKE) -C utils/sort	qsort_tuple.c
 
 
 ##########################################################################
@@ -312,7 +312,8 @@ maintainer-clean: distclean
 	      storage/lmgr/lwlocknames.h \
 	      utils/adt/jsonpath_gram.c \
 	      utils/adt/jsonpath_scan.c \
-	      utils/misc/guc-file.c
+	      utils/misc/guc-file.c \
+	      utils/sort/qsort_tuple.c
 
 
 ##########################################################################

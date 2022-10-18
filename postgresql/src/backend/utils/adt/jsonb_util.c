@@ -3,7 +3,7 @@
  * jsonb_util.c
  *	  converting between Jsonb and JsonbValues, and iterating.
  *
- * Copyright (c) 2014-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2014-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -18,7 +18,6 @@
 #include "common/hashfn.h"
 #include "common/jsonapi.h"
 #include "miscadmin.h"
-#include "port/pg_bitutils.h"
 #include "utils/builtins.h"
 #include "utils/datetime.h"
 #include "utils/json.h"
@@ -69,25 +68,18 @@ static JsonbValue *pushJsonbValueScalar(JsonbParseState **pstate,
 										JsonbIteratorToken seq,
 										JsonbValue *scalarVal);
 
-void
-JsonbToJsonbValue(Jsonb *jsonb, JsonbValue *val)
-{
-	val->type = jbvBinary;
-	val->val.binary.data = &jsonb->root;
-	val->val.binary.len = VARSIZE(jsonb) - VARHDRSZ;
-}
-
 /*
  * Turn an in-memory JsonbValue into a Jsonb for on-disk storage.
  *
- * Generally we find it more convenient to directly iterate through the Jsonb
- * representation and only really convert nested scalar values.
- * JsonbIteratorNext() does this, so that clients of the iteration code don't
- * have to directly deal with the binary representation (JsonbDeepContains() is
- * a notable exception, although all exceptions are internal to this module).
- * In general, functions that accept a JsonbValue argument are concerned with
- * the manipulation of scalar values, or simple containers of scalar values,
- * where it would be inconvenient to deal with a great amount of other state.
+ * There isn't a JsonbToJsonbValue(), because generally we find it more
+ * convenient to directly iterate through the Jsonb representation and only
+ * really convert nested scalar values.  JsonbIteratorNext() does this, so that
+ * clients of the iteration code don't have to directly deal with the binary
+ * representation (JsonbDeepContains() is a notable exception, although all
+ * exceptions are internal to this module).  In general, functions that accept
+ * a JsonbValue argument are concerned with the manipulation of scalar values,
+ * or simple containers of scalar values, where it would be inconvenient to
+ * deal with a great amount of other state.
  */
 Jsonb *
 JsonbValueToJsonb(JsonbValue *val)
@@ -571,30 +563,6 @@ pushJsonbValue(JsonbParseState **pstate, JsonbIteratorToken seq,
 	JsonbValue *res = NULL;
 	JsonbValue	v;
 	JsonbIteratorToken tok;
-	int			i;
-
-	if (jbval && (seq == WJB_ELEM || seq == WJB_VALUE) && jbval->type == jbvObject)
-	{
-		pushJsonbValue(pstate, WJB_BEGIN_OBJECT, NULL);
-		for (i = 0; i < jbval->val.object.nPairs; i++)
-		{
-			pushJsonbValue(pstate, WJB_KEY, &jbval->val.object.pairs[i].key);
-			pushJsonbValue(pstate, WJB_VALUE, &jbval->val.object.pairs[i].value);
-		}
-
-		return pushJsonbValue(pstate, WJB_END_OBJECT, NULL);
-	}
-
-	if (jbval && (seq == WJB_ELEM || seq == WJB_VALUE) && jbval->type == jbvArray)
-	{
-		pushJsonbValue(pstate, WJB_BEGIN_ARRAY, NULL);
-		for (i = 0; i < jbval->val.array.nElems; i++)
-		{
-			pushJsonbValue(pstate, WJB_ELEM, &jbval->val.array.elems[i]);
-		}
-
-		return pushJsonbValue(pstate, WJB_END_ARRAY, NULL);
-	}
 
 	if (!jbval || (seq != WJB_ELEM && seq != WJB_VALUE) ||
 		jbval->type != jbvBinary)
@@ -605,30 +573,9 @@ pushJsonbValue(JsonbParseState **pstate, JsonbIteratorToken seq,
 
 	/* unpack the binary and add each piece to the pstate */
 	it = JsonbIteratorInit(jbval->val.binary.data);
-
-	if ((jbval->val.binary.data->header & JB_FSCALAR) && *pstate)
-	{
-		tok = JsonbIteratorNext(&it, &v, true);
-		Assert(tok == WJB_BEGIN_ARRAY);
-		Assert(v.type == jbvArray && v.val.array.rawScalar);
-
-		tok = JsonbIteratorNext(&it, &v, true);
-		Assert(tok == WJB_ELEM);
-
-		res = pushJsonbValueScalar(pstate, seq, &v);
-
-		tok = JsonbIteratorNext(&it, &v, true);
-		Assert(tok == WJB_END_ARRAY);
-		Assert(it == NULL);
-
-		return res;
-	}
-
 	while ((tok = JsonbIteratorNext(&it, &v, false)) != WJB_DONE)
 		res = pushJsonbValueScalar(pstate, tok,
-								   tok < WJB_BEGIN_ARRAY ||
-								   (tok == WJB_BEGIN_ARRAY &&
-									v.val.array.rawScalar) ? &v : NULL);
+								   tok < WJB_BEGIN_ARRAY ? &v : NULL);
 
 	return res;
 }
@@ -1343,7 +1290,7 @@ JsonbHashScalarValue(const JsonbValue *scalarVal, uint32 *hash)
 	 * the previous value left 1 bit, then XOR'ing in the new
 	 * key/value/element's hash value.
 	 */
-	*hash = pg_rotate_left32(*hash, 1);
+	*hash = (*hash << 1) | (*hash >> 31);
 	*hash ^= tmp;
 }
 

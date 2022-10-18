@@ -36,7 +36,7 @@ COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable 
     FREEZE [ <replaceable class="parameter">boolean</replaceable> ]
     DELIMITER '<replaceable class="parameter">delimiter_character</replaceable>'
     NULL '<replaceable class="parameter">null_string</replaceable>'
-    HEADER [ <replaceable class="parameter">boolean</replaceable> | MATCH ]
+    HEADER [ <replaceable class="parameter">boolean</replaceable> ]
     QUOTE '<replaceable class="parameter">quote_character</replaceable>'
     ESCAPE '<replaceable class="parameter">escape_character</replaceable>'
     FORCE_QUOTE { ( <replaceable class="parameter">column_name</replaceable> [, ...] ) | * }
@@ -82,12 +82,6 @@ COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable 
    specified, data is transmitted via the connection between the
    client and the server.
   </para>
-
-  <para>
-    Each backend running <command>COPY</command> will report its progress
-    in the <structname>pg_stat_progress_copy</structname> view. See
-    <xref linkend="copy-progress-reporting"/> for details.
-  </para>
  </refsect1>
 
  <refsect1>
@@ -118,11 +112,9 @@ COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable 
     <term><replaceable class="parameter">query</replaceable></term>
     <listitem>
      <para>
-      A <link linkend="sql-select"><command>SELECT</command></link>,
-      <link linkend="sql-values"><command>VALUES</command></link>,
-      <link linkend="sql-insert"><command>INSERT</command></link>,
-      <link linkend="sql-update"><command>UPDATE</command></link>, or
-      <link linkend="sql-delete"><command>DELETE</command></link> command whose results are to be
+      A <xref linkend="sql-select"/>, <xref linkend="sql-values"/>,
+      <xref linkend="sql-insert"/>, <xref linkend="sql-update"/> or
+      <xref linkend="sql-delete"/> command whose results are to be
       copied.  Note that parentheses are required around the query.
      </para>
      <para>
@@ -276,14 +268,8 @@ COPY { <replaceable class="parameter">table_name</replaceable> [ ( <replaceable 
      <para>
       Specifies that the file contains a header line with the names of each
       column in the file.  On output, the first line contains the column
-      names from the table.  On input, the first line is discarded when this
-      option is set to <literal>true</literal> (or equivalent Boolean value).
-      If this option is set to <literal>MATCH</literal>, the number and names
-      of the columns in the header line must match the actual column names of
-      the table, in order;  otherwise an error is raised.
-      This option is not allowed when using <literal>binary</literal> format.
-      The <literal>MATCH</literal> option is only valid for <command>COPY
-      FROM</command> commands.
+      names from the table, and on input, the first line is ignored.
+      This option is allowed only when using <literal>CSV</literal> format.
      </para>
     </listitem>
    </varlistentry>
@@ -471,7 +457,7 @@ COPY <replaceable class="parameter">count</replaceable>
     by the server, not by the client application, must be executable by the
     <productname>PostgreSQL</productname> user.
     <command>COPY</command> naming a file or command is only allowed to
-    database superusers or users who are granted one of the roles
+    database superusers or users who are granted one of the default roles
     <literal>pg_read_server_files</literal>,
     <literal>pg_write_server_files</literal>,
     or <literal>pg_execute_server_program</literal>, since it allows reading
@@ -1069,13 +1055,5 @@ COPY [ BINARY ] <replaceable class="parameter">table_name</replaceable>
     [ [USING] DELIMITERS '<replaceable class="parameter">delimiter_character</replaceable>' ]
     [ WITH NULL AS '<replaceable class="parameter">null_string</replaceable>' ]
 </synopsis></para>
- </refsect1>
-
- <refsect1>
-  <title>See Also</title>
-
-  <simplelist type="inline">
-   <member><xref linkend="copy-progress-reporting"/></member>
-  </simplelist>
  </refsect1>
 </refentry>

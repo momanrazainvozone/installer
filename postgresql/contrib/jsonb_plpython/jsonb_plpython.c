@@ -28,9 +28,11 @@ static PyObject *PLyObject_FromJsonbContainer(JsonbContainer *jsonb);
 static JsonbValue *PLyObject_ToJsonbValue(PyObject *obj,
 										  JsonbParseState **jsonb_state, bool is_elem);
 
+#if PY_MAJOR_VERSION >= 3
 typedef PyObject *(*PLyUnicode_FromStringAndSize_t)
 			(const char *s, Py_ssize_t size);
 static PLyUnicode_FromStringAndSize_t PLyUnicode_FromStringAndSize_p;
+#endif
 
 /*
  * Module initialize function: fetch function pointers for cross-module calls.
@@ -43,10 +45,13 @@ _PG_init(void)
 	PLyObject_AsString_p = (PLyObject_AsString_t)
 		load_external_function("$libdir/" PLPYTHON_LIBNAME, "PLyObject_AsString",
 							   true, NULL);
+#if PY_MAJOR_VERSION >= 3
 	AssertVariableIsOfType(&PLyUnicode_FromStringAndSize, PLyUnicode_FromStringAndSize_t);
 	PLyUnicode_FromStringAndSize_p = (PLyUnicode_FromStringAndSize_t)
 		load_external_function("$libdir/" PLPYTHON_LIBNAME, "PLyUnicode_FromStringAndSize",
 							   true, NULL);
+#endif
+
 	AssertVariableIsOfType(&PLy_elog_impl, PLy_elog_impl_t);
 	PLy_elog_impl_p = (PLy_elog_impl_t)
 		load_external_function("$libdir/" PLPYTHON_LIBNAME, "PLy_elog_impl",
@@ -60,25 +65,25 @@ _PG_init(void)
 #define PLy_elog (PLy_elog_impl_p)
 
 /*
- * PLyUnicode_FromJsonbValue
+ * PLyString_FromJsonbValue
  *
  * Transform string JsonbValue to Python string.
  */
 static PyObject *
-PLyUnicode_FromJsonbValue(JsonbValue *jbv)
+PLyString_FromJsonbValue(JsonbValue *jbv)
 {
 	Assert(jbv->type == jbvString);
 
-	return PLyUnicode_FromStringAndSize(jbv->val.string.val, jbv->val.string.len);
+	return PyString_FromStringAndSize(jbv->val.string.val, jbv->val.string.len);
 }
 
 /*
- * PLyUnicode_ToJsonbValue
+ * PLyString_ToJsonbValue
  *
  * Transform Python string to JsonbValue.
  */
 static void
-PLyUnicode_ToJsonbValue(PyObject *obj, JsonbValue *jbvElem)
+PLyString_ToJsonbValue(PyObject *obj, JsonbValue *jbvElem)
 {
 	jbvElem->type = jbvString;
 	jbvElem->val.string.val = PLyObject_AsString(obj);
@@ -113,7 +118,7 @@ PLyObject_FromJsonbValue(JsonbValue *jsonbValue)
 			}
 
 		case jbvString:
-			return PLyUnicode_FromJsonbValue(jsonbValue);
+			return PLyString_FromJsonbValue(jsonbValue);
 
 		case jbvBool:
 			if (jsonbValue->val.boolean)
@@ -205,7 +210,7 @@ PLyObject_FromJsonbContainer(JsonbContainer *jsonb)
 						if (r != WJB_KEY)
 							continue;
 
-						key = PLyUnicode_FromJsonbValue(&v);
+						key = PLyString_FromJsonbValue(&v);
 						if (!key)
 						{
 							Py_XDECREF(result_v);
@@ -293,7 +298,7 @@ PLyMapping_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state)
 			else
 			{
 				/* All others types of keys we serialize to string */
-				PLyUnicode_ToJsonbValue(key, &jbvKey);
+				PLyString_ToJsonbValue(key, &jbvKey);
 			}
 
 			(void) pushJsonbValue(jsonb_state, WJB_KEY, &jbvKey);
@@ -382,17 +387,14 @@ PLyNumber_ToJsonbValue(PyObject *obj, JsonbValue *jbvNum)
 	pfree(str);
 
 	/*
-	 * jsonb doesn't allow NaN or infinity (per JSON specification), so we
-	 * have to reject those here explicitly.
+	 * jsonb doesn't allow NaN (per JSON specification), so we have to prevent
+	 * it here explicitly.  (Infinity is also not allowed in jsonb, but
+	 * numeric_in above already catches that.)
 	 */
 	if (numeric_is_nan(num))
 		ereport(ERROR,
 				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
 				 errmsg("cannot convert NaN to jsonb")));
-	if (numeric_is_inf(num))
-		ereport(ERROR,
-				(errcode(ERRCODE_NUMERIC_VALUE_OUT_OF_RANGE),
-				 errmsg("cannot convert infinity to jsonb")));
 
 	jbvNum->type = jbvNumeric;
 	jbvNum->val.numeric = num;
@@ -410,7 +412,7 @@ PLyObject_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state, bool is_ele
 {
 	JsonbValue *out;
 
-	if (!PyUnicode_Check(obj))
+	if (!(PyString_Check(obj) || PyUnicode_Check(obj)))
 	{
 		if (PySequence_Check(obj))
 			return PLySequence_ToJsonbValue(obj, jsonb_state);
@@ -422,8 +424,8 @@ PLyObject_ToJsonbValue(PyObject *obj, JsonbParseState **jsonb_state, bool is_ele
 
 	if (obj == Py_None)
 		out->type = jbvNull;
-	else if (PyUnicode_Check(obj))
-		PLyUnicode_ToJsonbValue(obj, out);
+	else if (PyString_Check(obj) || PyUnicode_Check(obj))
+		PLyString_ToJsonbValue(obj, out);
 
 	/*
 	 * PyNumber_Check() returns true for booleans, so boolean check should

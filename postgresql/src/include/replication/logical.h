@@ -2,7 +2,7 @@
  * logical.h
  *	   PostgreSQL logical decoding coordination
  *
- * Copyright (c) 2012-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2012-2020, PostgreSQL Global Development Group
  *
  *-------------------------------------------------------------------------
  */
@@ -26,8 +26,7 @@ typedef LogicalOutputPluginWriterWrite LogicalOutputPluginWriterPrepareWrite;
 
 typedef void (*LogicalOutputPluginWriterUpdateProgress) (struct LogicalDecodingContext *lr,
 														 XLogRecPtr Ptr,
-														 TransactionId xid,
-														 bool skipped_xact
+														 TransactionId xid
 );
 
 typedef struct LogicalDecodingContext
@@ -49,6 +48,9 @@ typedef struct LogicalDecodingContext
 	 * are unused.
 	 */
 	bool		fast_forward;
+
+	/* Are we processing the end LSN of a transaction? */
+	bool		end_xact;
 
 	OutputPluginCallbacks callbacks;
 	OutputPluginOptions options;
@@ -81,40 +83,18 @@ typedef struct LogicalDecodingContext
 	void	   *output_writer_private;
 
 	/*
-	 * Does the output plugin support streaming, and is it enabled?
-	 */
-	bool		streaming;
-
-	/*
-	 * Does the output plugin support two-phase decoding, and is it enabled?
-	 */
-	bool		twophase;
-
-	/*
-	 * Is two-phase option given by output plugin?
-	 *
-	 * This flag indicates that the plugin passed in the two-phase option as
-	 * part of the START_STREAMING command. We can't rely solely on the
-	 * twophase flag which only tells whether the plugin provided all the
-	 * necessary two-phase callbacks.
-	 */
-	bool		twophase_opt_given;
-
-	/*
 	 * State for writing output.
 	 */
 	bool		accept_writes;
 	bool		prepared_write;
 	XLogRecPtr	write_location;
 	TransactionId write_xid;
-	/* Are we processing the end LSN of a transaction? */
-	bool		end_xact;
 } LogicalDecodingContext;
 
 
 extern void CheckLogicalDecodingRequirements(void);
 
-extern LogicalDecodingContext *CreateInitDecodingContext(const char *plugin,
+extern LogicalDecodingContext *CreateInitDecodingContext(char *plugin,
 														 List *output_plugin_options,
 														 bool need_full_snapshot,
 														 XLogRecPtr restart_lsn,
@@ -138,10 +118,6 @@ extern void LogicalIncreaseRestartDecodingForSlot(XLogRecPtr current_lsn,
 												  XLogRecPtr restart_lsn);
 extern void LogicalConfirmReceivedLocation(XLogRecPtr lsn);
 
-extern bool filter_prepare_cb_wrapper(LogicalDecodingContext *ctx,
-									  TransactionId xid, const char *gid);
 extern bool filter_by_origin_cb_wrapper(LogicalDecodingContext *ctx, RepOriginId origin_id);
-extern void ResetLogicalStreamingState(void);
-extern void UpdateDecodingStats(LogicalDecodingContext *ctx);
 
 #endif

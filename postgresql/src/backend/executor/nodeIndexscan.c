@@ -3,7 +3,7 @@
  * nodeIndexscan.c
  *	  Routines to support indexed scans of relations
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  *
@@ -575,7 +575,6 @@ ExecReScanIndexScan(IndexScanState *node)
 	if (node->iss_ReorderQueue)
 	{
 		HeapTuple	tuple;
-
 		while (!pairingheap_is_empty(node->iss_ReorderQueue))
 		{
 			tuple = reorderqueue_pop(node);

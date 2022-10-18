@@ -1,14 +1,13 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use Config;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 78;
 
-my $tempdir = PostgreSQL::Test::Utils::tempdir;
+my $tempdir       = TestLib::tempdir;
+my $tempdir_short = TestLib::tempdir_short;
 
 #########################################
 # Basic checks
@@ -99,11 +98,10 @@ command_fails_like(
 	qr/\Qpg_dump: error: parallel backup only supported by the directory format\E/,
 	'pg_dump: parallel backup only supported by the directory format');
 
-# Note the trailing whitespace for the value of --jobs, that is valid.
 command_fails_like(
-	[ 'pg_dump', '-j', '-1 ' ],
-	qr/\Qpg_dump: error: -j\/--jobs must be in range\E/,
-	'pg_dump: -j/--jobs must be in range');
+	[ 'pg_dump', '-j', '-1' ],
+	qr/\Qpg_dump: error: invalid number of parallel jobs\E/,
+	'pg_dump: invalid number of parallel jobs');
 
 command_fails_like(
 	[ 'pg_dump', '-F', 'garbage' ],
@@ -112,8 +110,8 @@ command_fails_like(
 
 command_fails_like(
 	[ 'pg_restore', '-j', '-1', '-f -' ],
-	qr/\Qpg_restore: error: -j\/--jobs must be in range\E/,
-	'pg_restore: -j/--jobs must be in range');
+	qr/\Qpg_restore: error: invalid number of parallel jobs\E/,
+	'pg_restore: invalid number of parallel jobs');
 
 command_fails_like(
 	[ 'pg_restore', '--single-transaction', '-j3', '-f -' ],
@@ -122,34 +120,8 @@ command_fails_like(
 
 command_fails_like(
 	[ 'pg_dump', '-Z', '-1' ],
-	qr/\Qpg_dump: error: -Z\/--compress must be in range 0..9\E/,
-	'pg_dump: -Z/--compress must be in range');
-
-if (check_pg_config("#define HAVE_LIBZ 1"))
-{
-	command_fails_like(
-		[ 'pg_dump', '--compress', '1', '--format', 'tar' ],
-		qr/\Qpg_dump: error: compression is not supported by tar archive format\E/,
-		'pg_dump: compression is not supported by tar archive format');
-}
-else
-{
-	# --jobs > 1 forces an error with tar format.
-	command_fails_like(
-		[ 'pg_dump', '--compress', '1', '--format', 'tar', '-j3' ],
-		qr/\Qpg_dump: warning: requested compression not available in this installation -- archive will be uncompressed\E/,
-		'pg_dump: warning: compression not available in this installation');
-}
-
-command_fails_like(
-	[ 'pg_dump', '--extra-float-digits', '-16' ],
-	qr/\Qpg_dump: error: --extra-float-digits must be in range\E/,
-	'pg_dump: --extra-float-digits must be in range');
-
-command_fails_like(
-	[ 'pg_dump', '--rows-per-insert', '0' ],
-	qr/\Qpg_dump: error: --rows-per-insert must be in range\E/,
-	'pg_dump: --rows-per-insert must be in range');
+	qr/\Qpg_dump: error: compression level must be in range 0..9\E/,
+	'pg_dump: compression level must be in range 0..9');
 
 command_fails_like(
 	[ 'pg_restore', '--if-exists', '-f -' ],
@@ -203,5 +175,3 @@ command_fails_like(
 	qr/\Qpg_dumpall: error: option --exclude-database cannot be used together with -g\/--globals-only\E/,
 	'pg_dumpall: option --exclude-database cannot be used together with -g/--globals-only'
 );
-
-done_testing();

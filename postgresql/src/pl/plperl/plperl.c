@@ -337,7 +337,7 @@ hek2cstr(HE *he)
 	SAVETMPS;
 
 	/*-------------------------
-	 * Unfortunately, while HeUTF8 is true for most things > 256, for values
+	 * Unfortunately,  while HeUTF8 is true for most things > 256, for values
 	 * 128..255 it's not, but perl will treat them as unicode code points if
 	 * the utf8 flag is not set ( see The "Unicode Bug" in perldoc perlunicode
 	 * for more)
@@ -456,11 +456,12 @@ _PG_init(void)
 							   PGC_SUSET, 0,
 							   NULL, NULL, NULL);
 
-	MarkGUCPrefixReserved("plperl");
+	EmitWarningsOnPlaceholders("plperl");
 
 	/*
 	 * Create hash tables.
 	 */
+	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(Oid);
 	hash_ctl.entrysize = sizeof(plperl_interp_desc);
 	plperl_interp_hash = hash_create("PL/Perl interpreters",
@@ -468,6 +469,7 @@ _PG_init(void)
 									 &hash_ctl,
 									 HASH_ELEM | HASH_BLOBS);
 
+	memset(&hash_ctl, 0, sizeof(hash_ctl));
 	hash_ctl.keysize = sizeof(plperl_proc_key);
 	hash_ctl.entrysize = sizeof(plperl_proc_ptr);
 	plperl_proc_hash = hash_create("PL/Perl procedures",
@@ -581,12 +583,13 @@ select_perl_context(bool trusted)
 	{
 		HASHCTL		hash_ctl;
 
+		memset(&hash_ctl, 0, sizeof(hash_ctl));
 		hash_ctl.keysize = NAMEDATALEN;
 		hash_ctl.entrysize = sizeof(plperl_query_entry);
 		interp_desc->query_hash = hash_create("PL/Perl queries",
 											  32,
 											  &hash_ctl,
-											  HASH_ELEM | HASH_STRINGS);
+											  HASH_ELEM);
 	}
 
 	/*
@@ -2004,7 +2007,7 @@ plperl_validator(PG_FUNCTION_ARGS)
 	{
 		if (proc->prorettype == TRIGGEROID)
 			is_trigger = true;
-		else if (proc->prorettype == EVENT_TRIGGEROID)
+		else if (proc->prorettype == EVTTRIGGEROID)
 			is_event_trigger = true;
 		else if (proc->prorettype != RECORDOID &&
 				 proc->prorettype != VOIDOID)
@@ -2417,15 +2420,12 @@ plperl_func_handler(PG_FUNCTION_ARGS)
 	if (prodesc->fn_retisset)
 	{
 		/* Check context before allowing the call to go through */
-		if (!rsi || !IsA(rsi, ReturnSetInfo))
+		if (!rsi || !IsA(rsi, ReturnSetInfo) ||
+			(rsi->allowedModes & SFRM_Materialize) == 0)
 			ereport(ERROR,
 					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("set-valued function called in context that cannot accept a set")));
-
-		if (!(rsi->allowedModes & SFRM_Materialize))
-			ereport(ERROR,
-					(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-					 errmsg("materialize mode required, but it is not allowed in this context")));
+					 errmsg("set-valued function called in context that "
+							"cannot accept a set")));
 	}
 
 	activate_interpreter(prodesc->interp);
@@ -2843,7 +2843,7 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 					rettype == RECORDOID)
 					 /* okay */ ;
 				else if (rettype == TRIGGEROID ||
-						 rettype == EVENT_TRIGGEROID)
+						 rettype == EVTTRIGGEROID)
 					ereport(ERROR,
 							(errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
 							 errmsg("trigger functions can only be called "
@@ -2858,7 +2858,9 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 			prodesc->result_oid = rettype;
 			prodesc->fn_retisset = procStruct->proretset;
 			prodesc->fn_retistuple = type_is_rowtype(rettype);
-			prodesc->fn_retisarray = IsTrueArrayType(typeStruct);
+
+			prodesc->fn_retisarray =
+				(typeStruct->typlen == -1 && typeStruct->typelem);
 
 			fmgr_info_cxt(typeStruct->typinput,
 						  &(prodesc->result_in_func),
@@ -2904,7 +2906,7 @@ compile_plperl_function(Oid fn_oid, bool is_trigger, bool is_event_trigger)
 				}
 
 				/* Identify array-type arguments */
-				if (IsTrueArrayType(typeStruct))
+				if (typeStruct->typelem != 0 && typeStruct->typlen == -1)
 					prodesc->arg_arraytype[i] = argtype;
 				else
 					prodesc->arg_arraytype[i] = InvalidOid;

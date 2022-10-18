@@ -4,7 +4,7 @@
  *
  * Routines corresponding to schema objects
  *
- * Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * -------------------------------------------------------------------------
  */
@@ -15,6 +15,7 @@
 #include "access/sysattr.h"
 #include "access/table.h"
 #include "catalog/dependency.h"
+#include "catalog/indexing.h"
 #include "catalog/pg_database.h"
 #include "catalog/pg_namespace.h"
 #include "commands/seclabel.h"
@@ -122,7 +123,7 @@ sepgsql_schema_drop(Oid namespaceId)
 	object.classId = NamespaceRelationId;
 	object.objectId = namespaceId;
 	object.objectSubId = 0;
-	audit_name = getObjectIdentity(&object, false);
+	audit_name = getObjectIdentity(&object);
 
 	sepgsql_avc_check_perms(&object,
 							SEPG_CLASS_DB_SCHEMA,
@@ -147,7 +148,7 @@ sepgsql_schema_relabel(Oid namespaceId, const char *seclabel)
 	object.classId = NamespaceRelationId;
 	object.objectId = namespaceId;
 	object.objectSubId = 0;
-	audit_name = getObjectIdentity(&object, false);
+	audit_name = getObjectIdentity(&object);
 
 	/*
 	 * check db_schema:{setattr relabelfrom} permission
@@ -185,7 +186,7 @@ check_schema_perms(Oid namespaceId, uint32 required, bool abort_on_violation)
 	object.classId = NamespaceRelationId;
 	object.objectId = namespaceId;
 	object.objectSubId = 0;
-	audit_name = getObjectIdentity(&object, false);
+	audit_name = getObjectIdentity(&object);
 
 	result = sepgsql_avc_check_perms(&object,
 									 SEPG_CLASS_DB_SCHEMA,

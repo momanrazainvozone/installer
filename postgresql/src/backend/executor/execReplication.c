@@ -3,7 +3,7 @@
  * execReplication.c
  *	  miscellaneous executor routines for logical replication
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -404,10 +404,10 @@ retry:
  * Caller is responsible for opening the indexes.
  */
 void
-ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
-						 EState *estate, TupleTableSlot *slot)
+ExecSimpleRelationInsert(EState *estate, TupleTableSlot *slot)
 {
 	bool		skip_tuple = false;
+	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 
 	/* For now we support only tables. */
@@ -430,22 +430,20 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
 			rel->rd_att->constr->has_generated_stored)
-			ExecComputeStoredGenerated(resultRelInfo, estate, slot,
-									   CMD_INSERT);
+			ExecComputeStoredGenerated(estate, slot, CMD_INSERT);
 
 		/* Check the constraints of the tuple */
 		if (rel->rd_att->constr)
 			ExecConstraints(resultRelInfo, slot, estate);
-		if (rel->rd_rel->relispartition)
+		if (resultRelInfo->ri_PartitionCheck)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		/* OK, store the tuple and create index entries for it */
 		simple_table_tuple_insert(resultRelInfo->ri_RelationDesc, slot);
 
 		if (resultRelInfo->ri_NumIndices > 0)
-			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
-												   slot, estate, false, false,
-												   NULL, NIL);
+			recheckIndexes = ExecInsertIndexTuples(slot, estate, false, NULL,
+												   NIL);
 
 		/* AFTER ROW INSERT Triggers */
 		ExecARInsertTriggers(estate, resultRelInfo, slot,
@@ -468,11 +466,11 @@ ExecSimpleRelationInsert(ResultRelInfo *resultRelInfo,
  * Caller is responsible for opening the indexes.
  */
 void
-ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
-						 EState *estate, EPQState *epqstate,
+ExecSimpleRelationUpdate(EState *estate, EPQState *epqstate,
 						 TupleTableSlot *searchslot, TupleTableSlot *slot)
 {
 	bool		skip_tuple = false;
+	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &(searchslot->tts_tid);
 
@@ -486,7 +484,7 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		resultRelInfo->ri_TrigDesc->trig_update_before_row)
 	{
 		if (!ExecBRUpdateTriggers(estate, epqstate, resultRelInfo,
-								  tid, NULL, slot, NULL))
+								  tid, NULL, slot))
 			skip_tuple = true;	/* "do nothing" */
 	}
 
@@ -498,28 +496,25 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
 		/* Compute stored generated columns */
 		if (rel->rd_att->constr &&
 			rel->rd_att->constr->has_generated_stored)
-			ExecComputeStoredGenerated(resultRelInfo, estate, slot,
-									   CMD_UPDATE);
+			ExecComputeStoredGenerated(estate, slot, CMD_UPDATE);
 
 		/* Check the constraints of the tuple */
 		if (rel->rd_att->constr)
 			ExecConstraints(resultRelInfo, slot, estate);
-		if (rel->rd_rel->relispartition)
+		if (resultRelInfo->ri_PartitionCheck)
 			ExecPartitionCheck(resultRelInfo, slot, estate, true);
 
 		simple_table_tuple_update(rel, tid, slot, estate->es_snapshot,
 								  &update_indexes);
 
 		if (resultRelInfo->ri_NumIndices > 0 && update_indexes)
-			recheckIndexes = ExecInsertIndexTuples(resultRelInfo,
-												   slot, estate, true, false,
-												   NULL, NIL);
+			recheckIndexes = ExecInsertIndexTuples(slot, estate, false, NULL,
+												   NIL);
 
 		/* AFTER ROW UPDATE Triggers */
 		ExecARUpdateTriggers(estate, resultRelInfo,
-							 NULL, NULL,
 							 tid, NULL, slot,
-							 recheckIndexes, NULL, false);
+							 recheckIndexes, NULL);
 
 		list_free(recheckIndexes);
 	}
@@ -532,11 +527,11 @@ ExecSimpleRelationUpdate(ResultRelInfo *resultRelInfo,
  * Caller is responsible for opening the indexes.
  */
 void
-ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
-						 EState *estate, EPQState *epqstate,
+ExecSimpleRelationDelete(EState *estate, EPQState *epqstate,
 						 TupleTableSlot *searchslot)
 {
 	bool		skip_tuple = false;
+	ResultRelInfo *resultRelInfo = estate->es_result_relation_info;
 	Relation	rel = resultRelInfo->ri_RelationDesc;
 	ItemPointer tid = &searchslot->tts_tid;
 
@@ -548,6 +543,7 @@ ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
 	{
 		skip_tuple = !ExecBRDeleteTriggers(estate, epqstate, resultRelInfo,
 										   tid, NULL, NULL);
+
 	}
 
 	if (!skip_tuple)
@@ -557,7 +553,7 @@ ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
 
 		/* AFTER ROW DELETE Triggers */
 		ExecARDeleteTriggers(estate, resultRelInfo,
-							 tid, NULL, NULL, false);
+							 tid, NULL, NULL);
 	}
 }
 
@@ -567,77 +563,30 @@ ExecSimpleRelationDelete(ResultRelInfo *resultRelInfo,
 void
 CheckCmdReplicaIdentity(Relation rel, CmdType cmd)
 {
-	PublicationDesc pubdesc;
-
-	/*
-	 * Skip checking the replica identity for partitioned tables, because the
-	 * operations are actually performed on the leaf partitions.
-	 */
-	if (rel->rd_rel->relkind == RELKIND_PARTITIONED_TABLE)
-		return;
+	PublicationActions *pubactions;
 
 	/* We only need to do checks for UPDATE and DELETE. */
 	if (cmd != CMD_UPDATE && cmd != CMD_DELETE)
 		return;
 
-	/*
-	 * It is only safe to execute UPDATE/DELETE when all columns, referenced
-	 * in the row filters from publications which the relation is in, are
-	 * valid - i.e. when all referenced columns are part of REPLICA IDENTITY
-	 * or the table does not publish UPDATEs or DELETEs.
-	 *
-	 * XXX We could optimize it by first checking whether any of the
-	 * publications have a row filter for this relation. If not and relation
-	 * has replica identity then we can avoid building the descriptor but as
-	 * this happens only one time it doesn't seem worth the additional
-	 * complexity.
-	 */
-	RelationBuildPublicationDesc(rel, &pubdesc);
-	if (cmd == CMD_UPDATE && !pubdesc.rf_valid_for_update)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("cannot update table \"%s\"",
-						RelationGetRelationName(rel)),
-				 errdetail("Column used in the publication WHERE expression is not part of the replica identity.")));
-	else if (cmd == CMD_UPDATE && !pubdesc.cols_valid_for_update)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("cannot update table \"%s\"",
-						RelationGetRelationName(rel)),
-				 errdetail("Column list used by the publication does not cover the replica identity.")));
-	else if (cmd == CMD_DELETE && !pubdesc.rf_valid_for_delete)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("cannot delete from table \"%s\"",
-						RelationGetRelationName(rel)),
-				 errdetail("Column used in the publication WHERE expression is not part of the replica identity.")));
-	else if (cmd == CMD_DELETE && !pubdesc.cols_valid_for_delete)
-		ereport(ERROR,
-				(errcode(ERRCODE_INVALID_COLUMN_REFERENCE),
-				 errmsg("cannot delete from table \"%s\"",
-						RelationGetRelationName(rel)),
-				 errdetail("Column list used by the publication does not cover the replica identity.")));
-
 	/* If relation has replica identity we are always good. */
-	if (OidIsValid(RelationGetReplicaIndex(rel)))
-		return;
-
-	/* REPLICA IDENTITY FULL is also good for UPDATE/DELETE. */
-	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL)
+	if (rel->rd_rel->relreplident == REPLICA_IDENTITY_FULL ||
+		OidIsValid(RelationGetReplicaIndex(rel)))
 		return;
 
 	/*
-	 * This is UPDATE/DELETE and there is no replica identity.
+	 * This is either UPDATE OR DELETE and there is no replica identity.
 	 *
 	 * Check if the table publishes UPDATES or DELETES.
 	 */
-	if (cmd == CMD_UPDATE && pubdesc.pubactions.pubupdate)
+	pubactions = GetRelationPublicationActions(rel);
+	if (cmd == CMD_UPDATE && pubactions->pubupdate)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot update table \"%s\" because it does not have a replica identity and publishes updates",
 						RelationGetRelationName(rel)),
 				 errhint("To enable updating the table, set REPLICA IDENTITY using ALTER TABLE.")));
-	else if (cmd == CMD_DELETE && pubdesc.pubactions.pubdelete)
+	else if (cmd == CMD_DELETE && pubactions->pubdelete)
 		ereport(ERROR,
 				(errcode(ERRCODE_OBJECT_NOT_IN_PREREQUISITE_STATE),
 				 errmsg("cannot delete from table \"%s\" because it does not have a replica identity and publishes deletes",
@@ -655,10 +604,22 @@ void
 CheckSubscriptionRelkind(char relkind, const char *nspname,
 						 const char *relname)
 {
+	/*
+	 * Give a more specific error for foreign tables.
+	 */
+	if (relkind == RELKIND_FOREIGN_TABLE)
+		ereport(ERROR,
+				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
+				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
+						nspname, relname),
+				 errdetail("\"%s.%s\" is a foreign table.",
+						   nspname, relname)));
+
 	if (relkind != RELKIND_RELATION && relkind != RELKIND_PARTITIONED_TABLE)
 		ereport(ERROR,
 				(errcode(ERRCODE_WRONG_OBJECT_TYPE),
 				 errmsg("cannot use relation \"%s.%s\" as logical replication target",
 						nspname, relname),
-				 errdetail_relkind_not_supported(relkind)));
+				 errdetail("\"%s.%s\" is not a table.",
+						   nspname, relname)));
 }

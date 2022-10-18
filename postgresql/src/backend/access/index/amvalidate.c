@@ -1,10 +1,9 @@
 /*-------------------------------------------------------------------------
  *
  * amvalidate.c
- *	  Support routines for index access methods' amvalidate and
- *	  amadjustmembers functions.
+ *	  Support routines for index access methods' amvalidate functions.
  *
- * Copyright (c) 2016-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2016-2020, PostgreSQL Global Development Group
  *
  *
  * IDENTIFICATION
@@ -223,28 +222,21 @@ check_amop_signature(Oid opno, Oid restype, Oid lefttype, Oid righttype)
 }
 
 /*
- * Get the OID of the opclass belonging to an opfamily and accepting
- * the specified type as input type.  Returns InvalidOid if no such opclass.
- *
- * If there is more than one such opclass, you get a random one of them.
- * Since that shouldn't happen, we don't waste cycles checking.
- *
- * We could look up the AM's OID from the opfamily, but all existing callers
- * know that or can get it without an extra lookup, so we make them pass it.
+ * Is the datatype a legitimate input type for the btree opfamily?
  */
-Oid
-opclass_for_family_datatype(Oid amoid, Oid opfamilyoid, Oid datatypeoid)
+bool
+opfamily_can_sort_type(Oid opfamilyoid, Oid datatypeoid)
 {
-	Oid			result = InvalidOid;
+	bool		result = false;
 	CatCList   *opclist;
 	int			i;
 
 	/*
-	 * We search through all the AM's opclasses to see if one matches.  This
-	 * is a bit inefficient but there is no better index available.  It also
-	 * saves making an explicit check that the opfamily belongs to the AM.
+	 * We search through all btree opclasses to see if one matches.  This is a
+	 * bit inefficient but there is no better index available.  It also saves
+	 * making an explicit check that the opfamily belongs to btree.
 	 */
-	opclist = SearchSysCacheList1(CLAAMNAMENSP, ObjectIdGetDatum(amoid));
+	opclist = SearchSysCacheList1(CLAAMNAMENSP, ObjectIdGetDatum(BTREE_AM_OID));
 
 	for (i = 0; i < opclist->n_members; i++)
 	{
@@ -254,7 +246,7 @@ opclass_for_family_datatype(Oid amoid, Oid opfamilyoid, Oid datatypeoid)
 		if (classform->opcfamily == opfamilyoid &&
 			classform->opcintype == datatypeoid)
 		{
-			result = classform->oid;
+			result = true;
 			break;
 		}
 	}
@@ -262,15 +254,4 @@ opclass_for_family_datatype(Oid amoid, Oid opfamilyoid, Oid datatypeoid)
 	ReleaseCatCacheList(opclist);
 
 	return result;
-}
-
-/*
- * Is the datatype a legitimate input type for the btree opfamily?
- */
-bool
-opfamily_can_sort_type(Oid opfamilyoid, Oid datatypeoid)
-{
-	return OidIsValid(opclass_for_family_datatype(BTREE_AM_OID,
-												  opfamilyoid,
-												  datatypeoid));
 }

@@ -3,7 +3,7 @@
  * fe-print.c
  *	  functions for pretty-printing query results
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * These functions were formerly part of fe-exec.c, but they
@@ -36,6 +36,7 @@
 #include "libpq-fe.h"
 #include "libpq-int.h"
 
+#define PQmblenBounded(s, e)  strnlen(s, PQmblen(s, e))
 
 static bool do_field(const PQprintOpt *po, const PGresult *res,
 					 const int i, const int j, const int fs_len,

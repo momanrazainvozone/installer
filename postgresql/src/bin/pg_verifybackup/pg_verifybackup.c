@@ -3,7 +3,7 @@
  * pg_verifybackup.c
  *	  Verify a backup against a backup manifest.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/bin/pg_verifybackup/pg_verifybackup.c
@@ -252,8 +252,8 @@ main(int argc, char **argv)
 				canonicalize_path(wal_directory);
 				break;
 			default:
-				/* getopt_long already emitted a complaint */
-				pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+				fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+						progname);
 				exit(1);
 		}
 	}
@@ -261,8 +261,9 @@ main(int argc, char **argv)
 	/* Get backup directory name */
 	if (optind >= argc)
 	{
-		pg_log_error("no backup directory specified");
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		pg_log_fatal("no backup directory specified");
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
 		exit(1);
 	}
 	context.backup_directory = pstrdup(argv[optind++]);
@@ -271,9 +272,10 @@ main(int argc, char **argv)
 	/* Complain if any arguments remain */
 	if (optind < argc)
 	{
-		pg_log_error("too many command-line arguments (first is \"%s\")",
+		pg_log_fatal("too many command-line arguments (first is \"%s\")",
 					 argv[optind]);
-		pg_log_error_hint("Try \"%s --help\" for more information.", progname);
+		fprintf(stderr, _("Try \"%s --help\" for more information.\n"),
+				progname);
 		exit(1);
 	}
 
@@ -292,13 +294,17 @@ main(int argc, char **argv)
 
 			if (find_my_exec(argv[0], full_path) < 0)
 				strlcpy(full_path, progname, sizeof(full_path));
-
 			if (ret == -1)
-				pg_fatal("program \"%s\" is needed by %s but was not found in the same directory as \"%s\"",
-						 "pg_waldump", "pg_verifybackup", full_path);
+				pg_log_fatal("The program \"%s\" is needed by %s but was not found in the\n"
+							 "same directory as \"%s\".\n"
+							 "Check your installation.",
+							 "pg_waldump", "pg_verifybackup", full_path);
 			else
-				pg_fatal("program \"%s\" was found by \"%s\" but was not the same version as %s",
-						 "pg_waldump", full_path, "pg_verifybackup");
+				pg_log_fatal("The program \"%s\" was found by \"%s\"\n"
+							 "but was not the same version as %s.\n"
+							 "Check your installation.",
+							 "pg_waldump", full_path, "pg_verifybackup");
+			exit(1);
 		}
 	}
 
@@ -406,8 +412,8 @@ parse_manifest_file(char *manifest_path, manifest_files_hash **ht_p,
 			report_fatal_error("could not read file \"%s\": %m",
 							   manifest_path);
 		else
-			report_fatal_error("could not read file \"%s\": read %d of %lld",
-							   manifest_path, rc, (long long int) statbuf.st_size);
+			report_fatal_error("could not read file \"%s\": read %d of %zu",
+							   manifest_path, rc, (size_t) statbuf.st_size);
 	}
 
 	/* Close the manifest file. */
@@ -443,7 +449,7 @@ report_manifest_error(JsonManifestParseContext *context, const char *fmt,...)
 	va_list		ap;
 
 	va_start(ap, fmt);
-	pg_log_generic_v(PG_LOG_ERROR, PG_LOG_PRIMARY, gettext(fmt), ap);
+	pg_log_generic_v(PG_LOG_FATAL, gettext(fmt), ap);
 	va_end(ap);
 
 	exit(1);
@@ -633,8 +639,8 @@ verify_backup_file(verifier_context *context, char *relpath, char *fullpath)
 	if (m->size != sb.st_size)
 	{
 		report_backup_error(context,
-							"\"%s\" has size %lld on disk but size %zu in the manifest",
-							relpath, (long long int) sb.st_size, m->size);
+							"\"%s\" has size %zu on disk but size %zu in the manifest",
+							relpath, (size_t) sb.st_size, m->size);
 		m->bad = true;
 	}
 
@@ -721,25 +727,13 @@ verify_file_checksum(verifier_context *context, manifest_file *m,
 	}
 
 	/* Initialize checksum context. */
-	if (pg_checksum_init(&checksum_ctx, m->checksum_type) < 0)
-	{
-		report_backup_error(context, "could not initialize checksum of file \"%s\"",
-							relpath);
-		close(fd);
-		return;
-	}
+	pg_checksum_init(&checksum_ctx, m->checksum_type);
 
 	/* Read the file chunk by chunk, updating the checksum as we go. */
 	while ((rc = read(fd, buffer, READ_CHUNK_SIZE)) > 0)
 	{
 		bytes_read += rc;
-		if (pg_checksum_update(&checksum_ctx, buffer, rc) < 0)
-		{
-			report_backup_error(context, "could not update checksum of file \"%s\"",
-								relpath);
-			close(fd);
-			return;
-		}
+		pg_checksum_update(&checksum_ctx, buffer, rc);
 	}
 	if (rc < 0)
 		report_backup_error(context, "could not read file \"%s\": %m",
@@ -774,13 +768,6 @@ verify_file_checksum(verifier_context *context, manifest_file *m,
 
 	/* Get the final checksum. */
 	checksumlen = pg_checksum_final(&checksum_ctx, checksumbuf);
-	if (checksumlen < 0)
-	{
-		report_backup_error(context,
-							"could not finalize checksum of file \"%s\"",
-							relpath);
-		return;
-	}
 
 	/* And check it against the manifest. */
 	if (checksumlen != m->checksum_length)
@@ -809,8 +796,10 @@ parse_required_wal(verifier_context *context, char *pg_waldump_path,
 
 		pg_waldump_cmd = psprintf("\"%s\" --quiet --path=\"%s\" --timeline=%u --start=%X/%X --end=%X/%X\n",
 								  pg_waldump_path, wal_directory, this_wal_range->tli,
-								  LSN_FORMAT_ARGS(this_wal_range->start_lsn),
-								  LSN_FORMAT_ARGS(this_wal_range->end_lsn));
+								  (uint32) (this_wal_range->start_lsn >> 32),
+								  (uint32) this_wal_range->start_lsn,
+								  (uint32) (this_wal_range->end_lsn >> 32),
+								  (uint32) this_wal_range->end_lsn);
 		if (system(pg_waldump_cmd) != 0)
 			report_backup_error(context,
 								"WAL parsing failed for timeline %u",
@@ -832,7 +821,7 @@ report_backup_error(verifier_context *context, const char *pg_restrict fmt,...)
 	va_list		ap;
 
 	va_start(ap, fmt);
-	pg_log_generic_v(PG_LOG_ERROR, PG_LOG_PRIMARY, gettext(fmt), ap);
+	pg_log_generic_v(PG_LOG_ERROR, gettext(fmt), ap);
 	va_end(ap);
 
 	context->saw_any_error = true;
@@ -849,7 +838,7 @@ report_fatal_error(const char *pg_restrict fmt,...)
 	va_list		ap;
 
 	va_start(ap, fmt);
-	pg_log_generic_v(PG_LOG_ERROR, PG_LOG_PRIMARY, gettext(fmt), ap);
+	pg_log_generic_v(PG_LOG_FATAL, gettext(fmt), ap);
 	va_end(ap);
 
 	exit(1);

@@ -106,6 +106,7 @@ ox2(PlannerInfo *root, Gene *tour1, Gene *tour2, Gene *offspring, int num_gene, 
 			/* city isn't used yet, so inherit from tour2 */
 			offspring[k] = tour2[k];
 	}
+
 }
 
 #endif							/* defined(OX2) */

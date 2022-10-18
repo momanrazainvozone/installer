@@ -1,4 +1,4 @@
-<!-- doc/src/sgml/appendix-obsolete.sgml -->
+<!-- doc/src/sgml/obsolete.sgml -->
 
 <appendix id="appendix-obsolete">
  <title>Obsolete or Renamed Features</title>
@@ -34,7 +34,6 @@
  -->
 
  &obsolete-recovery-config;
- &obsolete-default-roles;
  &obsolete-pgxlogdump;
  &obsolete-pgresetxlog;
  &obsolete-pgreceivexlog;

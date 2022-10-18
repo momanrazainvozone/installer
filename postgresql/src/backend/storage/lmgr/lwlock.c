@@ -20,7 +20,7 @@
  * appropriate value for a free lock.  The meaning of the variable is up to
  * the caller, the lightweight lock code just assigns and compares it.
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * IDENTIFICATION
@@ -79,7 +79,6 @@
 #include "miscadmin.h"
 #include "pg_trace.h"
 #include "pgstat.h"
-#include "port/pg_bitutils.h"
 #include "postmaster/postmaster.h"
 #include "replication/slot.h"
 #include "storage/ipc.h"
@@ -147,6 +146,8 @@ static const char *const BuiltinTrancheNames[] = {
 	"WALInsert",
 	/* LWTRANCHE_BUFFER_CONTENT: */
 	"BufferContent",
+	/* LWTRANCHE_BUFFER_IO: */
+	"BufferIO",
 	/* LWTRANCHE_REPLICATION_ORIGIN_STATE: */
 	"ReplicationOriginState",
 	/* LWTRANCHE_REPLICATION_SLOT_IO: */
@@ -176,13 +177,7 @@ static const char *const BuiltinTrancheNames[] = {
 	/* LWTRANCHE_PARALLEL_APPEND: */
 	"ParallelAppend",
 	/* LWTRANCHE_PER_XACT_PREDICATE_LIST: */
-	"PerXactPredicateList",
-	/* LWTRANCHE_PGSTATS_DSA: */
-	"PgStatsDSA",
-	/* LWTRANCHE_PGSTATS_HASH: */
-	"PgStatsHash",
-	/* LWTRANCHE_PGSTATS_DATA: */
-	"PgStatsData",
+	"PerXactPredicateList"
 };
 
 StaticAssertDecl(lengthof(BuiltinTrancheNames) ==
@@ -242,6 +237,8 @@ int			NamedLWLockTrancheRequests = 0;
 
 /* points to data in shared memory: */
 NamedLWLockTranche *NamedLWLockTrancheArray = NULL;
+
+static bool lock_named_request_allowed = true;
 
 static void InitializeLWLocks(void);
 static inline void LWLockReportWaitStart(LWLock *lock);
@@ -345,6 +342,7 @@ init_lwlock_stats(void)
 											 ALLOCSET_DEFAULT_SIZES);
 	MemoryContextAllowInCriticalSection(lwlock_stats_cxt, true);
 
+	MemSet(&ctl, 0, sizeof(ctl));
 	ctl.keysize = sizeof(lwlock_stats_key);
 	ctl.entrysize = sizeof(lwlock_stats);
 	ctl.hcxt = lwlock_stats_cxt;
@@ -456,6 +454,9 @@ LWLockShmemSize(void)
 	for (i = 0; i < NamedLWLockTrancheRequests; i++)
 		size = add_size(size, strlen(NamedLWLockTrancheRequestArray[i].tranche_name) + 1);
 
+	/* Disallow adding any more named tranches. */
+	lock_named_request_allowed = false;
+
 	return size;
 }
 
@@ -469,7 +470,8 @@ CreateLWLocks(void)
 	StaticAssertStmt(LW_VAL_EXCLUSIVE > (uint32) MAX_BACKENDS,
 					 "MAX_BACKENDS too big for lwlock.c");
 
-	StaticAssertStmt(sizeof(LWLock) <= LWLOCK_PADDED_SIZE,
+	StaticAssertStmt(sizeof(LWLock) <= LWLOCK_MINIMAL_SIZE &&
+					 sizeof(LWLock) <= LWLOCK_PADDED_SIZE,
 					 "Miscalculated LWLock padding");
 
 	if (!IsUnderPostmaster)
@@ -523,17 +525,18 @@ InitializeLWLocks(void)
 		LWLockInitialize(&lock->lock, id);
 
 	/* Initialize buffer mapping LWLocks in main array */
-	lock = MainLWLockArray + BUFFER_MAPPING_LWLOCK_OFFSET;
+	lock = MainLWLockArray + NUM_INDIVIDUAL_LWLOCKS;
 	for (id = 0; id < NUM_BUFFER_PARTITIONS; id++, lock++)
 		LWLockInitialize(&lock->lock, LWTRANCHE_BUFFER_MAPPING);
 
 	/* Initialize lmgrs' LWLocks in main array */
-	lock = MainLWLockArray + LOCK_MANAGER_LWLOCK_OFFSET;
+	lock = MainLWLockArray + NUM_INDIVIDUAL_LWLOCKS + NUM_BUFFER_PARTITIONS;
 	for (id = 0; id < NUM_LOCK_PARTITIONS; id++, lock++)
 		LWLockInitialize(&lock->lock, LWTRANCHE_LOCK_MANAGER);
 
 	/* Initialize predicate lmgrs' LWLocks in main array */
-	lock = MainLWLockArray + PREDICATELOCK_MANAGER_LWLOCK_OFFSET;
+	lock = MainLWLockArray + NUM_INDIVIDUAL_LWLOCKS +
+		NUM_BUFFER_PARTITIONS + NUM_LOCK_PARTITIONS;
 	for (id = 0; id < NUM_PREDICATELOCK_PARTITIONS; id++, lock++)
 		LWLockInitialize(&lock->lock, LWTRANCHE_PREDICATE_LOCK_MANAGER);
 
@@ -661,7 +664,9 @@ LWLockRegisterTranche(int tranche_id, const char *tranche_name)
 	{
 		int			newalloc;
 
-		newalloc = pg_nextpower2_32(Max(8, tranche_id + 1));
+		newalloc = Max(LWLockTrancheNamesAllocated, 8);
+		while (newalloc <= tranche_id)
+			newalloc *= 2;
 
 		if (LWLockTrancheNames == NULL)
 			LWLockTrancheNames = (const char **)
@@ -686,9 +691,12 @@ LWLockRegisterTranche(int tranche_id, const char *tranche_name)
  *		Request that extra LWLocks be allocated during postmaster
  *		startup.
  *
- * This may only be called via the shmem_request_hook of a library that is
- * loaded into the postmaster via shared_preload_libraries.  Calls from
- * elsewhere will fail.
+ * This is only useful for extensions if called from the _PG_init hook
+ * of a library that is loaded into the postmaster via
+ * shared_preload_libraries.  Once shared memory has been allocated, calls
+ * will be ignored.  (We could raise an error, but it seems better to make
+ * it a no-op, so that libraries containing such calls can be reloaded if
+ * needed.)
  *
  * The tranche name will be user-visible as a wait event name, so try to
  * use a name that fits the style for those.
@@ -698,8 +706,8 @@ RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
 {
 	NamedLWLockTrancheRequest *request;
 
-	if (!process_shmem_requests_in_progress)
-		elog(FATAL, "cannot request additional LWLocks outside shmem_request_hook");
+	if (IsUnderPostmaster || !lock_named_request_allowed)
+		return;					/* too late */
 
 	if (NamedLWLockTrancheRequestArray == NULL)
 	{
@@ -712,7 +720,10 @@ RequestNamedLWLockTranche(const char *tranche_name, int num_lwlocks)
 
 	if (NamedLWLockTrancheRequests >= NamedLWLockTrancheRequestsAllocated)
 	{
-		int			i = pg_nextpower2_32(NamedLWLockTrancheRequests + 1);
+		int			i = NamedLWLockTrancheRequestsAllocated;
+
+		while (i <= NamedLWLockTrancheRequests)
+			i *= 2;
 
 		NamedLWLockTrancheRequestArray = (NamedLWLockTrancheRequest *)
 			repalloc(NamedLWLockTrancheRequestArray,
@@ -1088,6 +1099,7 @@ LWLockQueueSelf(LWLock *lock, LWLockMode mode)
 #ifdef LOCK_DEBUG
 	pg_atomic_fetch_add_u32(&lock->nwaiters, 1);
 #endif
+
 }
 
 /*
@@ -1717,6 +1729,9 @@ LWLockWaitForVar(LWLock *lock, uint64 *valptr, uint64 oldval, uint64 *newval)
 		/* Now loop back and check the status of the lock again. */
 	}
 
+	if (TRACE_POSTGRESQL_LWLOCK_ACQUIRE_ENABLED())
+		TRACE_POSTGRESQL_LWLOCK_ACQUIRE(T_NAME(lock), LW_EXCLUSIVE);
+
 	/*
 	 * Fix the process wait semaphore's count for any absorbed wakeups.
 	 */
@@ -1835,8 +1850,6 @@ LWLockRelease(LWLock *lock)
 	/* nobody else can have that kind of lock */
 	Assert(!(oldstate & LW_VAL_EXCLUSIVE));
 
-	if (TRACE_POSTGRESQL_LWLOCK_RELEASE_ENABLED())
-		TRACE_POSTGRESQL_LWLOCK_RELEASE(T_NAME(lock));
 
 	/*
 	 * We're still waiting for backends to get scheduled, don't wake them up
@@ -1859,6 +1872,9 @@ LWLockRelease(LWLock *lock)
 		LOG_LWDEBUG("LWLockRelease", lock, "releasing waiters");
 		LWLockWakeup(lock);
 	}
+
+	if (TRACE_POSTGRESQL_LWLOCK_RELEASE_ENABLED())
+		TRACE_POSTGRESQL_LWLOCK_RELEASE(T_NAME(lock));
 
 	/*
 	 * Now okay to allow cancel/die interrupts.

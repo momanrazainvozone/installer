@@ -1,26 +1,25 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Verify that various forms of corruption are detected by pg_verifybackup.
 
 use strict;
 use warnings;
+use Cwd;
+use Config;
 use File::Path qw(rmtree);
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 44;
 
-my $primary = PostgreSQL::Test::Cluster->new('primary');
-$primary->init(allows_streaming => 1);
-$primary->start;
+my $master = get_new_node('master');
+$master->init(allows_streaming => 1);
+$master->start;
 
 # Include a user-defined tablespace in the hopes of detecting problems in that
 # area.
-my $source_ts_path   = PostgreSQL::Test::Utils::tempdir_short();
+my $source_ts_path   = TestLib::tempdir_short();
 my $source_ts_prefix = $source_ts_path;
 $source_ts_prefix =~ s!(^[A-Z]:/[^/]*)/.*!$1!;
 
-$primary->safe_psql('postgres', <<EOM);
+$master->safe_psql('postgres', <<EOM);
 CREATE TABLE x1 (a int);
 INSERT INTO x1 VALUES (111);
 CREATE TABLESPACE ts1 LOCATION '$source_ts_path';
@@ -104,15 +103,15 @@ for my $scenario (@scenario)
 		  if $scenario->{'skip_on_windows'} && $windows_os;
 
 		# Take a backup and check that it verifies OK.
-		my $backup_path    = $primary->backup_dir . '/' . $name;
-		my $backup_ts_path = PostgreSQL::Test::Utils::tempdir_short();
+		my $backup_path    = $master->backup_dir . '/' . $name;
+		my $backup_ts_path = TestLib::tempdir_short();
 		# The tablespace map parameter confuses Msys2, which tries to mangle
 		# it. Tell it not to.
 		# See https://www.msys2.org/wiki/Porting/#filesystem-namespaces
 		local $ENV{MSYS2_ARG_CONV_EXCL} = $source_ts_prefix;
-		$primary->command_ok(
+		$master->command_ok(
 			[
-				'pg_basebackup', '-D', $backup_path, '--no-sync', '-cfast',
+				'pg_basebackup', '-D', $backup_path, '--no-sync',
 				'-T', "${source_ts_path}=${backup_ts_path}"
 			],
 			"base backup ok");
@@ -288,5 +287,3 @@ sub cleanup_search_directory_fails
 	chmod(0700, $pathname) || die "chmod $pathname: $!";
 	return;
 }
-
-done_testing();

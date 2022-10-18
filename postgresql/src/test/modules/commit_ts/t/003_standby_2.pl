@@ -1,41 +1,38 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
-# Test primary/standby scenario where the track_commit_timestamp GUC is
+# Test master/standby scenario where the track_commit_timestamp GUC is
 # repeatedly toggled on and off.
 use strict;
 use warnings;
 
-use PostgreSQL::Test::Utils;
-use Test::More;
-use PostgreSQL::Test::Cluster;
+use TestLib;
+use Test::More tests => 4;
+use PostgresNode;
 
 my $bkplabel = 'backup';
-my $primary  = PostgreSQL::Test::Cluster->new('primary');
-$primary->init(allows_streaming => 1);
-$primary->append_conf(
+my $master   = get_new_node('master');
+$master->init(allows_streaming => 1);
+$master->append_conf(
 	'postgresql.conf', qq{
 	track_commit_timestamp = on
 	max_wal_senders = 5
 	});
-$primary->start;
-$primary->backup($bkplabel);
+$master->start;
+$master->backup($bkplabel);
 
-my $standby = PostgreSQL::Test::Cluster->new('standby');
-$standby->init_from_backup($primary, $bkplabel, has_streaming => 1);
+my $standby = get_new_node('standby');
+$standby->init_from_backup($master, $bkplabel, has_streaming => 1);
 $standby->start;
 
 for my $i (1 .. 10)
 {
-	$primary->safe_psql('postgres', "create table t$i()");
+	$master->safe_psql('postgres', "create table t$i()");
 }
-$primary->append_conf('postgresql.conf', 'track_commit_timestamp = off');
-$primary->restart;
-$primary->safe_psql('postgres', 'checkpoint');
-my $primary_lsn =
-  $primary->safe_psql('postgres', 'select pg_current_wal_lsn()');
+$master->append_conf('postgresql.conf', 'track_commit_timestamp = off');
+$master->restart;
+$master->safe_psql('postgres', 'checkpoint');
+my $master_lsn =
+  $master->safe_psql('postgres', 'select pg_current_wal_lsn()');
 $standby->poll_query_until('postgres',
-	qq{SELECT '$primary_lsn'::pg_lsn <= pg_last_wal_replay_lsn()})
+	qq{SELECT '$master_lsn'::pg_lsn <= pg_last_wal_replay_lsn()})
   or die "standby never caught up";
 
 $standby->safe_psql('postgres', 'checkpoint');
@@ -52,10 +49,10 @@ like(
 	qr/could not get commit timestamp data/,
 	'expected err msg after restart');
 
-$primary->append_conf('postgresql.conf', 'track_commit_timestamp = on');
-$primary->restart;
-$primary->append_conf('postgresql.conf', 'track_commit_timestamp = off');
-$primary->restart;
+$master->append_conf('postgresql.conf', 'track_commit_timestamp = on');
+$master->restart;
+$master->append_conf('postgresql.conf', 'track_commit_timestamp = off');
+$master->restart;
 
 system_or_bail('pg_ctl', '-D', $standby->data_dir, 'promote');
 
@@ -65,5 +62,3 @@ my $standby_ts = $standby->safe_psql('postgres',
 );
 isnt($standby_ts, '',
 	"standby gives valid value ($standby_ts) after promotion");
-
-done_testing();

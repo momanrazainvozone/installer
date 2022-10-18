@@ -318,6 +318,16 @@ key =&gt; NULL
     </tgroup>
   </table>
 
+  <note>
+  <para>
+   Prior to PostgreSQL 8.2, the containment operators <literal>@&gt;</literal>
+   and <literal>&lt;@</literal> were called <literal>@</literal> and <literal>~</literal>,
+   respectively. These names are still available, but are deprecated and will
+   eventually be removed. Notice that the old names are reversed from the
+   convention formerly followed by the core geometric data types!
+   </para>
+  </note>
+
   <table id="hstore-func-table">
    <title><type>hstore</type> Functions</title>
     <tgroup cols="1">
@@ -703,39 +713,6 @@ b
     </tbody>
    </tgroup>
   </table>
-
-  <para>
-   In addition to these operators and functions, values of
-   the <type>hstore</type> type can be subscripted, allowing them to act
-   like associative arrays.  Only a single subscript of type <type>text</type>
-   can be specified; it is interpreted as a key and the corresponding
-   value is fetched or stored.  For example,
-
-<programlisting>
-CREATE TABLE mytable (h hstore);
-INSERT INTO mytable VALUES ('a=>b, c=>d');
-SELECT h['a'] FROM mytable;
- h
----
- b
-(1 row)
-
-UPDATE mytable SET h['c'] = 'new';
-SELECT h FROM mytable;
-          h
-----------------------
- "a"=>"b", "c"=>"new"
-(1 row)
-</programlisting>
-
-   A subscripted fetch returns <literal>NULL</literal> if the subscript
-   is <literal>NULL</literal> or that key does not exist in
-   the <type>hstore</type>.  (Thus, a subscripted fetch is not greatly
-   different from the <literal>-&gt;</literal> operator.)
-   A subscripted update fails if the subscript is <literal>NULL</literal>;
-   otherwise, it replaces the value for that key, adding an entry to
-   the <type>hstore</type> if the key does not already exist.
-  </para>
  </sect2>
 
  <sect2>
@@ -790,16 +767,7 @@ CREATE INDEX hidx ON testhstore USING HASH (h);
   <para>
    Add a key, or update an existing key with a new value:
 <programlisting>
-UPDATE tab SET h['c'] = '3';
-</programlisting>
-   Another way to do the same thing is:
-<programlisting>
 UPDATE tab SET h = h || hstore('c', '3');
-</programlisting>
-   If multiple keys are to be added or changed in one operation,
-   the concatenation approach is more efficient than subscripting:
-<programlisting>
-UPDATE tab SET h = h || hstore(array['q', 'w'], array['11', '12']);
 </programlisting>
   </para>
 
@@ -817,7 +785,7 @@ CREATE TABLE test (col1 integer, col2 text, col3 text);
 INSERT INTO test VALUES (123, 'foo', 'bar');
 
 SELECT hstore(t) FROM test AS t;
-                   hstore
+                   hstore                    
 ---------------------------------------------
  "col1"=&gt;"123", "col2"=&gt;"foo", "col3"=&gt;"bar"
 (1 row)
@@ -831,9 +799,9 @@ CREATE TABLE test (col1 integer, col2 text, col3 text);
 
 SELECT * FROM populate_record(null::test,
                               '"col1"=&gt;"456", "col2"=&gt;"zzz"');
- col1 | col2 | col3
+ col1 | col2 | col3 
 ------+------+------
-  456 | zzz  |
+  456 | zzz  | 
 (1 row)
 </programlisting>
   </para>
@@ -845,7 +813,7 @@ CREATE TABLE test (col1 integer, col2 text, col3 text);
 INSERT INTO test VALUES (123, 'foo', 'bar');
 
 SELECT (r).* FROM (SELECT t #= '"col3"=&gt;"baz"' AS r FROM test t) s;
- col1 | col2 | col3
+ col1 | col2 | col3 
 ------+------+------
   123 | foo  | baz
 (1 row)
@@ -873,7 +841,7 @@ SELECT * FROM each('aaa=&gt;bq, b=&gt;NULL, ""=&gt;1');
   <para>
    Using a table:
 <programlisting>
-CREATE TABLE stat AS SELECT (each(h)).key, (each(h)).value FROM testhstore;
+SELECT (each(h)).key, (each(h)).value INTO stat FROM testhstore;
 </programlisting>
   </para>
 
@@ -943,8 +911,12 @@ ALTER TABLE tablename ALTER hstorecol TYPE hstore USING hstorecol || '';
    and <literal>hstore_plperlu</literal>, for trusted and untrusted PL/Perl.
    If you install these transforms and specify them when creating a
    function, <type>hstore</type> values are mapped to Perl hashes.  The
-   extension for PL/Python is called <literal>hstore_plpython3u</literal>.
-   If you use it, <type>hstore</type> values are mapped to Python dictionaries.
+   extensions for PL/Python are
+   called <literal>hstore_plpythonu</literal>, <literal>hstore_plpython2u</literal>,
+   and <literal>hstore_plpython3u</literal>
+   (see <xref linkend="plpython-python23"/> for the PL/Python naming
+   convention).  If you use them, <type>hstore</type> values are mapped to
+   Python dictionaries.
   </para>
 
   <caution>

@@ -3,7 +3,7 @@
  * file_fdw.c
  *		  foreign-data wrapper for server-side flat files (or programs).
  *
- * Copyright (c) 2010-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2010-2020, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *		  contrib/file_fdw/file_fdw.c
@@ -105,7 +105,7 @@ typedef struct FileFdwExecutionState
 	bool		is_program;		/* true if filename represents an OS command */
 	List	   *options;		/* merged COPY options, excluding filename and
 								 * is_program */
-	CopyFromState cstate;		/* COPY execution state */
+	CopyState	cstate;			/* COPY execution state */
 } FileFdwExecutionState;
 
 /*
@@ -269,16 +269,16 @@ file_fdw_validator(PG_FUNCTION_ARGS)
 			 * otherwise there'd still be a security hole.
 			 */
 			if (strcmp(def->defname, "filename") == 0 &&
-				!has_privs_of_role(GetUserId(), ROLE_PG_READ_SERVER_FILES))
+				!is_member_of_role(GetUserId(), DEFAULT_ROLE_READ_SERVER_FILES))
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						 errmsg("only superuser or a role with privileges of the pg_read_server_files role may specify the filename option of a file_fdw foreign table")));
+						 errmsg("only superuser or a member of the pg_read_server_files role may specify the filename option of a file_fdw foreign table")));
 
 			if (strcmp(def->defname, "program") == 0 &&
-				!has_privs_of_role(GetUserId(), ROLE_PG_EXECUTE_SERVER_PROGRAM))
+				!is_member_of_role(GetUserId(), DEFAULT_ROLE_EXECUTE_SERVER_PROGRAM))
 				ereport(ERROR,
 						(errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-						 errmsg("only superuser or a role with privileges of the pg_execute_server_program role may specify the program option of a file_fdw foreign table")));
+						 errmsg("only superuser or a member of the pg_execute_server_program role may specify the program option of a file_fdw foreign table")));
 
 			filename = defGetString(def);
 		}
@@ -655,7 +655,7 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	char	   *filename;
 	bool		is_program;
 	List	   *options;
-	CopyFromState cstate;
+	CopyState	cstate;
 	FileFdwExecutionState *festate;
 
 	/*
@@ -677,7 +677,6 @@ fileBeginForeignScan(ForeignScanState *node, int eflags)
 	 */
 	cstate = BeginCopyFrom(NULL,
 						   node->ss.ss_currentRelation,
-						   NULL,
 						   filename,
 						   is_program,
 						   NULL,
@@ -750,7 +749,6 @@ fileReScanForeignScan(ForeignScanState *node)
 
 	festate->cstate = BeginCopyFrom(NULL,
 									node->ss.ss_currentRelation,
-									NULL,
 									festate->filename,
 									festate->is_program,
 									NULL,
@@ -995,7 +993,7 @@ estimate_size(PlannerInfo *root, RelOptInfo *baserel,
 	/*
 	 * Estimate the number of tuples in the file.
 	 */
-	if (baserel->tuples >= 0 && baserel->pages > 0)
+	if (baserel->pages > 0)
 	{
 		/*
 		 * We have # of pages and # of tuples from pg_class (that is, from a
@@ -1106,7 +1104,7 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	char	   *filename;
 	bool		is_program;
 	List	   *options;
-	CopyFromState cstate;
+	CopyState	cstate;
 	ErrorContextCallback errcallback;
 	MemoryContext oldcontext = CurrentMemoryContext;
 	MemoryContext tupcontext;
@@ -1124,7 +1122,7 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 	/*
 	 * Create CopyState from FDW options.
 	 */
-	cstate = BeginCopyFrom(NULL, onerel, NULL, filename, is_program, NULL, NIL,
+	cstate = BeginCopyFrom(NULL, onerel, filename, is_program, NULL, NIL,
 						   options);
 
 	/*
@@ -1188,7 +1186,7 @@ file_acquire_sample_rows(Relation onerel, int elevel,
 				 * Found a suitable tuple, so save it, replacing one old tuple
 				 * at random
 				 */
-				int			k = (int) (targrows * sampler_random_fract(&rstate.randstate));
+				int			k = (int) (targrows * sampler_random_fract(rstate.randstate));
 
 				Assert(k >= 0 && k < targrows);
 				heap_freetuple(rows[k]);

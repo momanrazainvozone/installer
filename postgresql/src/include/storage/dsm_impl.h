@@ -3,7 +3,7 @@
  * dsm_impl.h
  *	  low-level dynamic shared memory primitives
  *
- * Portions Copyright (c) 1996-2022, PostgreSQL Global Development Group
+ * Portions Copyright (c) 1996-2020, PostgreSQL Global Development Group
  * Portions Copyright (c) 1994, Regents of the University of California
  *
  * src/include/storage/dsm_impl.h
@@ -39,8 +39,7 @@
 #endif
 
 /* GUC. */
-extern PGDLLIMPORT int dynamic_shared_memory_type;
-extern PGDLLIMPORT int min_dynamic_shared_memory;
+extern int	dynamic_shared_memory_type;
 
 /*
  * Directory for on-disk state.

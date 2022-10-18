@@ -9,7 +9,7 @@
  * Shridhar Daithankar <shridhar_daithankar@persistent.co.in>
  *
  * contrib/dblink/dblink.c
- * Copyright (c) 2001-2022, PostgreSQL Global Development Group
+ * Copyright (c) 2001-2020, PostgreSQL Global Development Group
  * ALL RIGHTS RESERVED;
  *
  * Permission to use, copy, modify, and distribute this software and its
@@ -38,6 +38,7 @@
 #include "access/relation.h"
 #include "access/reloptions.h"
 #include "access/table.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_data_wrapper.h"
 #include "catalog/pg_foreign_server.h"
@@ -1004,6 +1005,9 @@ materializeResult(FunctionCallInfo fcinfo, PGconn *conn, PGresult *res)
 
 			/* clean up GUC settings, if we changed any */
 			restoreLocalGucs(nestlevel);
+
+			/* clean up and return the tuplestore */
+			tuplestore_donestoring(tupstore);
 		}
 	}
 	PG_FINALLY();
@@ -1927,6 +1931,12 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	PGconn	   *conn;
 	PGnotify   *notify;
 	ReturnSetInfo *rsinfo = (ReturnSetInfo *) fcinfo->resultinfo;
+	TupleDesc	tupdesc;
+	Tuplestorestate *tupstore;
+	MemoryContext per_query_ctx;
+	MemoryContext oldcontext;
+
+	prepTuplestoreResult(fcinfo);
 
 	dblink_init();
 	if (PG_NARGS() == 1)
@@ -1934,7 +1944,23 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 	else
 		conn = pconn->conn;
 
-	SetSingleFuncCall(fcinfo, 0);
+	/* create the tuplestore in per-query memory */
+	per_query_ctx = rsinfo->econtext->ecxt_per_query_memory;
+	oldcontext = MemoryContextSwitchTo(per_query_ctx);
+
+	tupdesc = CreateTemplateTupleDesc(DBLINK_NOTIFY_COLS);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 1, "notify_name",
+					   TEXTOID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 2, "be_pid",
+					   INT4OID, -1, 0);
+	TupleDescInitEntry(tupdesc, (AttrNumber) 3, "extra",
+					   TEXTOID, -1, 0);
+
+	tupstore = tuplestore_begin_heap(true, false, work_mem);
+	rsinfo->setResult = tupstore;
+	rsinfo->setDesc = tupdesc;
+
+	MemoryContextSwitchTo(oldcontext);
 
 	PQconsumeInput(conn);
 	while ((notify = PQnotifies(conn)) != NULL)
@@ -1957,11 +1983,14 @@ dblink_get_notify(PG_FUNCTION_ARGS)
 		else
 			nulls[2] = true;
 
-		tuplestore_putvalues(rsinfo->setResult, rsinfo->setDesc, values, nulls);
+		tuplestore_putvalues(tupstore, tupdesc, values, nulls);
 
 		PQfreemem(notify);
 		PQconsumeInput(conn);
 	}
+
+	/* clean up and return the tuplestore */
+	tuplestore_donestoring(tupstore);
 
 	return (Datum) 0;
 }
@@ -2026,10 +2055,8 @@ dblink_fdw_validator(PG_FUNCTION_ARGS)
 			ereport(ERROR,
 					(errcode(ERRCODE_FDW_OPTION_NAME_NOT_FOUND),
 					 errmsg("invalid option \"%s\"", def->defname),
-					 buf.len > 0
-					 ? errhint("Valid options in this context are: %s",
-							   buf.data)
-					 : errhint("There are no valid options in this context.")));
+					 errhint("Valid options in this context are: %s",
+							 buf.data)));
 		}
 	}
 
@@ -2581,8 +2608,7 @@ createConnHash(void)
 	ctl.keysize = NAMEDATALEN;
 	ctl.entrysize = sizeof(remoteConnHashEnt);
 
-	return hash_create("Remote Con hash", NUMCONN, &ctl,
-					   HASH_ELEM | HASH_STRINGS);
+	return hash_create("Remote Con hash", NUMCONN, &ctl, HASH_ELEM);
 }
 
 static void
@@ -2634,6 +2660,7 @@ deleteConnection(const char *name)
 		ereport(ERROR,
 				(errcode(ERRCODE_UNDEFINED_OBJECT),
 				 errmsg("undefined connection name")));
+
 }
 
 static void

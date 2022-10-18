@@ -87,8 +87,11 @@
   linkend="wal"><acronym>WAL</acronym></link>, or a custom implementation.
   If <acronym>WAL</acronym> is chosen, either <link
   linkend="generic-wal">Generic WAL Records</link> can be used,
-  or a <link linkend="custom-rmgr">Custom WAL Resource Manager</link> can be
-  implemented.
+  or a new type of <acronym>WAL</acronym> records can be implemented.
+  Generic WAL Records are easy, but imply higher WAL volume.
+  Implementation of a new type of WAL record
+  currently requires modifications to core code (specifically,
+  <filename>src/include/access/rmgrlist.h</filename>).
  </para>
 
  <para>

@@ -1,20 +1,17 @@
-
-# Copyright (c) 2021-2022, PostgreSQL Global Development Group
-
 # Test TRUNCATE
 use strict;
 use warnings;
-use PostgreSQL::Test::Cluster;
-use PostgreSQL::Test::Utils;
-use Test::More;
+use PostgresNode;
+use TestLib;
+use Test::More tests => 12;
 
 # setup
 
-my $node_publisher = PostgreSQL::Test::Cluster->new('publisher');
+my $node_publisher = get_new_node('publisher');
 $node_publisher->init(allows_streaming => 'logical');
 $node_publisher->start;
 
-my $node_subscriber = PostgreSQL::Test::Cluster->new('subscriber');
+my $node_subscriber = get_new_node('subscriber');
 $node_subscriber->init(allows_streaming => 'logical');
 $node_subscriber->append_conf('postgresql.conf',
 	qq(max_logical_replication_workers = 6));
@@ -67,7 +64,10 @@ $node_subscriber->safe_psql('postgres',
 );
 
 # Wait for initial sync of all subscriptions
-$node_subscriber->wait_for_subscription_sync;
+my $synced_query =
+  "SELECT count(1) = 0 FROM pg_subscription_rel WHERE srsubstate NOT IN ('r', 's');";
+$node_subscriber->poll_query_until('postgres', $synced_query)
+  or die "Timed out while waiting for subscriber to synchronize data";
 
 # insert data to truncate
 
@@ -161,42 +161,14 @@ $result = $node_subscriber->safe_psql('postgres',
 	"SELECT count(*), min(a), max(a) FROM tab2");
 is($result, qq(3|1|3), 'truncate of multiple tables some not published');
 
-# Test that truncate works for synchronous logical replication
-
-$node_publisher->safe_psql('postgres',
-	"ALTER SYSTEM SET synchronous_standby_names TO 'sub1'");
-$node_publisher->safe_psql('postgres', "SELECT pg_reload_conf()");
-
-# insert data to truncate
-
-$node_publisher->safe_psql('postgres',
-	"INSERT INTO tab1 VALUES (1), (2), (3)");
-
-$node_publisher->wait_for_catchup('sub1');
-
-$result = $node_subscriber->safe_psql('postgres',
-	"SELECT count(*), min(a), max(a) FROM tab1");
-is($result, qq(3|1|3), 'check synchronous logical replication');
-
-$node_publisher->safe_psql('postgres', "TRUNCATE tab1");
-
-$node_publisher->wait_for_catchup('sub1');
-
-$result = $node_subscriber->safe_psql('postgres',
-	"SELECT count(*), min(a), max(a) FROM tab1");
-is($result, qq(0||),
-	'truncate replicated in synchronous logical replication');
-
-$node_publisher->safe_psql('postgres',
-	"ALTER SYSTEM RESET synchronous_standby_names");
-$node_publisher->safe_psql('postgres', "SELECT pg_reload_conf()");
-
 # test that truncate works for logical replication when there are multiple
 # subscriptions for a single table
 
-$node_publisher->safe_psql('postgres', "CREATE TABLE tab5 (a int)");
+$node_publisher->safe_psql('postgres',
+	"CREATE TABLE tab5 (a int)");
 
-$node_subscriber->safe_psql('postgres', "CREATE TABLE tab5 (a int)");
+$node_subscriber->safe_psql('postgres',
+	"CREATE TABLE tab5 (a int)");
 
 $node_publisher->safe_psql('postgres',
 	"CREATE PUBLICATION pub5 FOR TABLE tab5");
@@ -208,7 +180,8 @@ $node_subscriber->safe_psql('postgres',
 );
 
 # wait for initial data sync
-$node_subscriber->wait_for_subscription_sync;
+$node_subscriber->poll_query_until('postgres', $synced_query)
+  or die "Timed out while waiting for subscriber to synchronize data";
 
 # insert data to truncate
 
@@ -229,11 +202,10 @@ $node_publisher->wait_for_catchup('sub5_2');
 
 $result = $node_subscriber->safe_psql('postgres',
 	"SELECT count(*), min(a), max(a) FROM tab5");
-is($result, qq(0||), 'truncate replicated for multiple subscriptions');
+is($result, qq(0||),
+	'truncate replicated for multiple subscriptions');
 
 # check deadlocks
 $result = $node_subscriber->safe_psql('postgres',
 	"SELECT deadlocks FROM pg_stat_database WHERE datname='postgres'");
 is($result, qq(0), 'no deadlocks detected');
-
-done_testing();

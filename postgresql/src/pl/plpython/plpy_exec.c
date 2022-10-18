@@ -294,7 +294,7 @@ PLy_exec_function(FunctionCallInfo fcinfo, PLyProcedure *proc)
 /* trigger subhandler
  *
  * the python function is expected to return Py_None if the tuple is
- * acceptable and unmodified.  Otherwise it should return a PyUnicode
+ * acceptable and unmodified.  Otherwise it should return a PyString
  * object who's value is SKIP, or MODIFY.  SKIP means don't perform
  * this action.  MODIFY means the tuple has been modified, so update
  * tuple and perform action.  SKIP and MODIFY assume the trigger fires
@@ -360,7 +360,9 @@ PLy_exec_trigger(FunctionCallInfo fcinfo, PLyProcedure *proc)
 		{
 			char	   *srv;
 
-			if (PyUnicode_Check(plrv))
+			if (PyString_Check(plrv))
+				srv = PyString_AsString(plrv);
+			else if (PyUnicode_Check(plrv))
 				srv = PLyUnicode_AsString(plrv);
 			else
 			{
@@ -698,35 +700,35 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 		if (!pltdata)
 			return NULL;
 
-		pltname = PLyUnicode_FromString(tdata->tg_trigger->tgname);
+		pltname = PyString_FromString(tdata->tg_trigger->tgname);
 		PyDict_SetItemString(pltdata, "name", pltname);
 		Py_DECREF(pltname);
 
 		stroid = DatumGetCString(DirectFunctionCall1(oidout,
 													 ObjectIdGetDatum(tdata->tg_relation->rd_id)));
-		pltrelid = PLyUnicode_FromString(stroid);
+		pltrelid = PyString_FromString(stroid);
 		PyDict_SetItemString(pltdata, "relid", pltrelid);
 		Py_DECREF(pltrelid);
 		pfree(stroid);
 
 		stroid = SPI_getrelname(tdata->tg_relation);
-		plttablename = PLyUnicode_FromString(stroid);
+		plttablename = PyString_FromString(stroid);
 		PyDict_SetItemString(pltdata, "table_name", plttablename);
 		Py_DECREF(plttablename);
 		pfree(stroid);
 
 		stroid = SPI_getnspname(tdata->tg_relation);
-		plttableschema = PLyUnicode_FromString(stroid);
+		plttableschema = PyString_FromString(stroid);
 		PyDict_SetItemString(pltdata, "table_schema", plttableschema);
 		Py_DECREF(plttableschema);
 		pfree(stroid);
 
 		if (TRIGGER_FIRED_BEFORE(tdata->tg_event))
-			pltwhen = PLyUnicode_FromString("BEFORE");
+			pltwhen = PyString_FromString("BEFORE");
 		else if (TRIGGER_FIRED_AFTER(tdata->tg_event))
-			pltwhen = PLyUnicode_FromString("AFTER");
+			pltwhen = PyString_FromString("AFTER");
 		else if (TRIGGER_FIRED_INSTEAD(tdata->tg_event))
-			pltwhen = PLyUnicode_FromString("INSTEAD OF");
+			pltwhen = PyString_FromString("INSTEAD OF");
 		else
 		{
 			elog(ERROR, "unrecognized WHEN tg_event: %u", tdata->tg_event);
@@ -737,7 +739,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 
 		if (TRIGGER_FIRED_FOR_ROW(tdata->tg_event))
 		{
-			pltlevel = PLyUnicode_FromString("ROW");
+			pltlevel = PyString_FromString("ROW");
 			PyDict_SetItemString(pltdata, "level", pltlevel);
 			Py_DECREF(pltlevel);
 
@@ -748,7 +750,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 
 			if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
 			{
-				pltevent = PLyUnicode_FromString("INSERT");
+				pltevent = PyString_FromString("INSERT");
 
 				PyDict_SetItemString(pltdata, "old", Py_None);
 				pytnew = PLy_input_from_tuple(&proc->result_in,
@@ -761,7 +763,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			}
 			else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
 			{
-				pltevent = PLyUnicode_FromString("DELETE");
+				pltevent = PyString_FromString("DELETE");
 
 				PyDict_SetItemString(pltdata, "new", Py_None);
 				pytold = PLy_input_from_tuple(&proc->result_in,
@@ -774,7 +776,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			}
 			else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
 			{
-				pltevent = PLyUnicode_FromString("UPDATE");
+				pltevent = PyString_FromString("UPDATE");
 
 				pytnew = PLy_input_from_tuple(&proc->result_in,
 											  tdata->tg_newtuple,
@@ -801,7 +803,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 		}
 		else if (TRIGGER_FIRED_FOR_STATEMENT(tdata->tg_event))
 		{
-			pltlevel = PLyUnicode_FromString("STATEMENT");
+			pltlevel = PyString_FromString("STATEMENT");
 			PyDict_SetItemString(pltdata, "level", pltlevel);
 			Py_DECREF(pltlevel);
 
@@ -810,13 +812,13 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			*rv = NULL;
 
 			if (TRIGGER_FIRED_BY_INSERT(tdata->tg_event))
-				pltevent = PLyUnicode_FromString("INSERT");
+				pltevent = PyString_FromString("INSERT");
 			else if (TRIGGER_FIRED_BY_DELETE(tdata->tg_event))
-				pltevent = PLyUnicode_FromString("DELETE");
+				pltevent = PyString_FromString("DELETE");
 			else if (TRIGGER_FIRED_BY_UPDATE(tdata->tg_event))
-				pltevent = PLyUnicode_FromString("UPDATE");
+				pltevent = PyString_FromString("UPDATE");
 			else if (TRIGGER_FIRED_BY_TRUNCATE(tdata->tg_event))
-				pltevent = PLyUnicode_FromString("TRUNCATE");
+				pltevent = PyString_FromString("TRUNCATE");
 			else
 			{
 				elog(ERROR, "unrecognized OP tg_event: %u", tdata->tg_event);
@@ -845,7 +847,7 @@ PLy_trigger_build_args(FunctionCallInfo fcinfo, PLyProcedure *proc, HeapTuple *r
 			}
 			for (i = 0; i < tdata->tg_trigger->tgnargs; i++)
 			{
-				pltarg = PLyUnicode_FromString(tdata->tg_trigger->tgargs[i]);
+				pltarg = PyString_FromString(tdata->tg_trigger->tgargs[i]);
 
 				/*
 				 * stolen, don't Py_DECREF
@@ -929,7 +931,9 @@ PLy_modify_tuple(PLyProcedure *proc, PyObject *pltd, TriggerData *tdata,
 			PLyObToDatum *att;
 
 			platt = PyList_GetItem(plkeys, i);
-			if (PyUnicode_Check(platt))
+			if (PyString_Check(platt))
+				plattstr = PyString_AsString(platt);
+			else if (PyUnicode_Check(platt))
 				plattstr = PLyUnicode_AsString(platt);
 			else
 			{
