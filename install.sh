@@ -28,5 +28,3 @@ echo "** Installing redis server **" &&
 cd redis-stable &&
 make &&
 sudo install make
-
-su - postgres -c "/usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start"
