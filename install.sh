@@ -8,21 +8,22 @@ sudo npm i ./pm2-master -g &&
 echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 cd postgresql &&
 ./configure &&
-sudo make && sudo su &&
+sudo make &&
 echo "** ======================================  Installing postgress SQL Server ====================================== **" &&
-sudo make install && 
+sudo su -c root make install && 
 echo "** ======================================  Adding user postgres ====================================== **" &&
-sudo adduser postgres && 
-rm -rf  /usr/local/pgsql/data &&
+sudo su -c root adduser postgres && 
+sudo su -c root rm -rf  /usr/local/pgsql/data &&
 echo "** ======================================  Clear Data ====================================== **" &&
-mkdir /usr/local/pgsql/data && 
-chown postgres /usr/local/pgsql/data && 
+sudo su -c root mkdir /usr/local/pgsql/data && 
+sudo su -c root chown postgres /usr/local/pgsql/data && 
 echo "** ======================================  Chnage Permissions ====================================== **" &&
- sudo su - postgres && 
 echo "** ======================================  Finalizing ====================================== **" &&
-/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
-/usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start  && 
-/usr/local/pgsql/bin/createdb test &&
+sudo su -c postgres /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data  && 
+
+sudo su -c /usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data && 
+sudo su -c /usr/local/pgsql/bin/pg_ctl -D /u02/pgsql/data -l logfile start  && 
+sudo su -c /usr/local/pgsql/bin/createdb test &&
 exit && exit && export PATH=/usr/local/pgsql/bin:$PATH &&
 cd .. &&
 echo "** Installing redis server **" &&
