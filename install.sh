@@ -8,8 +8,8 @@ sudo npm i ./pm2-master -g &&
 echo "** Installing postgress SQL Server **" &&
 cd postgresql &&
 ./configure &&
-make &&
-su && make install && 
+sudo make &&
+su && sudo make install && 
 adduser postgres && 
 mkdir /usr/local/pgsql/data && 
 chown postgres /usr/local/pgsql/data && 
