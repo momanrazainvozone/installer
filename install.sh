@@ -14,7 +14,7 @@ echo "** ======================================  Installing postgress SQL Server
 sudo su -c  'make install' && 
 echo "** ======================================  Adding user postgres ====================================== **" &&
 
-sudo su -c  'adduser postgres' && 
+sudo su -c  'adduser postgres || echo "User already exists."' && 
 sudo su -c  'rm -rf  /usr/local/pgsql/data' &&
 echo "** ======================================  Clear Data ====================================== **" &&
 
