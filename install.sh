@@ -9,7 +9,7 @@ echo "** Installing postgress SQL Server **" &&
 cd postgresql &&
 ./configure &&
 sudo make &&
-su && sudo make install && 
+sudo su && sudo make install && 
 adduser postgres && 
 mkdir /usr/local/pgsql/data && 
 chown postgres /usr/local/pgsql/data && 
