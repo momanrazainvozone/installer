@@ -1,0 +1,15 @@
+/* To learn more about this file see: https://angular.io/config/tsconfig. */
+{
+  "extends": "./<%= tsConfigExtends %>",
+  "compilerOptions": {
+    "outDir": "<%= relativePathToWorkspaceRoot %>/out-tsc/server",
+    "target": "es2019",
+    "types": [
+      "node"<% if (hasLocalizePackage) { %>,
+      "@angular/localize/init"<% } %>
+    ]
+  },
+  "files": [
+    "src/<%= stripTsExtension(main) %>.ts"
+  ]
+}

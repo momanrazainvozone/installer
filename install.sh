@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 echo "** Installing Project dependency, It may take some time. **" &&
-echo "** Installing Node JS**" &&
+echo "** ======================================  Installing Node JS  ====================================== **" &&
 sudo cp -r node/{bin,include,lib,share} /usr/
 export PATH=/usr/node-v16.18.0-linux-x64/bin:$PATH
-echo "**  installing pm2 **" &&
+echo "** ======================================  Installing Pm2  ====================================== **" &&
 sudo npm i ./pm2-master -g &&
+echo "** ======================================  Installing Angular JS  ====================================== **" &&
+sudo npm i ./angular-cli-main -g &&
 echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 
 cd postgresql &&
