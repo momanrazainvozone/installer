@@ -1,8 +1,0 @@
-load("//tools:defaults.bzl", "ts_library")
-
-ts_library(
-    name = "ng-snapshot",
-    srcs = [],
-    data = ["package.json"],
-    visibility = ["//visibility:public"],
-)

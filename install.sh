@@ -4,9 +4,9 @@ echo "** ======================================  Installing Node JS  ===========
 sudo cp -r node/{bin,include,lib,share} /usr/
 export PATH=/usr/node-v16.18.0-linux-x64/bin:$PATH
 echo "** ======================================  Installing Pm2  ====================================== **" &&
-sudo npm i ./pm2-master -g &&
+sudo npm i -g ./pm2-master &&
 echo "** ======================================  Installing Angular JS  ====================================== **" &&
-sudo npm i ./angular-cli-main -g &&
+sudo npm i -g ./angular-13  &&
 echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 
 cd postgresql &&
