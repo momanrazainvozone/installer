@@ -5,8 +5,7 @@ sudo cp -r node/{bin,include,lib,share} /usr/
 export PATH=/usr/node-v16.18.0-linux-x64/bin:$PATH
 echo "** ======================================  Installing Pm2  ====================================== **" &&
 sudo npm i -g ./pm2-master &&
-echo "** ======================================  Installing Angular JS  ====================================== **" &&
-sudo npm i -g ./angular-13  &&
+
 echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 
 cd postgresql &&
@@ -28,4 +27,21 @@ export PATH="$PATH:/usr/local/pgsql/bin" &&
 echo "** Installing redis server **" &&
 cd ../redis &&
 sudo make &&
-sudo install make
+sudo install make &&
+
+sudo cp redis/redis.conf /etc/redis &&
+
+sudo cp redis/redis.service  /etc/systemd/system/redis.service &&
+
+echo "** Adding redis user**" &&
+
+sudo adduser --system --group --no-create-home redis && 
+
+sudo mkdir /var/lib/redis && 
+sudo chown redis:redis /var/lib/redis && 
+
+sudo chmod 770 /var/lib/redis && 
+
+sudo systemctl start redis && 
+
+echo "** Installation Finish**" 
