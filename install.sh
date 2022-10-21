@@ -25,9 +25,10 @@ sudo npm i -g ./pm2-master &&
 # sudo su -c '/usr/local/pgsql/bin/createdb test' postgres &&
 # export PATH="$PATH:/usr/local/pgsql/bin" &&
 echo "** Installing redis server **" &&
-cd redis &&
+cd redis && 
+# to update above cd ../redis
 sudo make &&
-sudo install make &&
+sudo make install &&
 ls &&
 sudo cp redis.conf /etc/redis &&
 
