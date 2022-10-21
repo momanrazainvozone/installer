@@ -6,11 +6,11 @@ export PATH=/usr/node-v16.18.0-linux-x64/bin:$PATH
 echo "** ======================================  Installing Pm2  ====================================== **" &&
 sudo npm i -g ./pm2-master &&
 
-echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
+# echo "** ======================================  Preparing postgress SQL Depenency  ====================================== **" &&
 
-cd postgresql &&
-./configure &&
-sudo make &&
+# cd postgresql &&
+# ./configure &&
+# sudo make &&
 # echo "** ======================================  Installing postgress SQL Server ====================================== **" &&
 
 # sudo su -c  'make install' root && 
@@ -28,7 +28,7 @@ echo "** Installing redis server **" &&
 cd ../redis &&
 sudo make &&
 sudo install make &&
-
+ls &&
 sudo cp redis.conf /etc/redis &&
 
 sudo cp redis.service  /etc/systemd/system/redis.service &&
