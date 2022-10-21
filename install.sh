@@ -36,7 +36,7 @@ sudo cp redis.service  /etc/systemd/system/redis.service &&
 
 echo "** Adding redis user**" &&
 
-sudo adduser --system --group --no-create-home redis && 
+sudo adduser --system --group --no-create-home redis ||  echo "** Redis user already exist**" && 
 
 sudo mkdir /var/lib/redis && 
 sudo chown redis:redis /var/lib/redis && 
