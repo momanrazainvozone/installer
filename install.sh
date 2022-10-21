@@ -29,9 +29,9 @@ cd ../redis &&
 sudo make &&
 sudo install make &&
 
-sudo cp redis/redis.conf /etc/redis &&
+sudo cp redis.conf /etc/redis &&
 
-sudo cp redis/redis.service  /etc/systemd/system/redis.service &&
+sudo cp redis.service  /etc/systemd/system/redis.service &&
 
 echo "** Adding redis user**" &&
 
