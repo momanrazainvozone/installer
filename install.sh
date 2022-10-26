@@ -25,6 +25,7 @@ sudo su -c '/usr/local/pgsql/bin/initdb -D /usr/local/pgsql/data' postgres &&
 sudo su - postgres -c ' /usr/local/pgsql/bin/pg_ctl -D /usr/local/pgsql/data -l logfile start'   && 
 sudo su -c '/usr/local/pgsql/bin/createdb test' postgres &&
 export PATH="$PATH:/usr/local/pgsql/bin" &&
+
 echo "** Installing redis server **" &&
 cd ../redis && 
 sudo make &&
