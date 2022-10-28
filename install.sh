@@ -30,7 +30,7 @@ echo "** Installing redis server **" &&
 cd ../redis && 
 sudo make &&
 sudo make install &&
-ls &&
+
 sudo cp redis.conf /etc/redis &&
 
 sudo cp redis.service  /etc/systemd/system/redis.service &&
