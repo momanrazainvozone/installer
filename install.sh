@@ -31,6 +31,8 @@ cd ../redis &&
 sudo make &&
 sudo make install &&
 
+sudo mkdir /etc/redis &&
+
 sudo cp redis.conf /etc/redis &&
 
 sudo cp redis.service  /etc/systemd/system/redis.service &&
